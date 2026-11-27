@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="112" fill="#0F5132"/>
+  <rect x="32" y="32" width="448" height="448" rx="92" stroke="#D4AF37" stroke-opacity="0.35" stroke-width="4"/>
+  <!-- Geometric 8-point star frame -->
+  <g transform="translate(256 256)">
+    <rect x="-112" y="-112" width="224" height="224" rx="16" stroke="#E2E8F0" stroke-opacity="0.22" stroke-width="6"/>
+    <rect x="-112" y="-112" width="224" height="224" rx="16" transform="rotate(45)" stroke="#D4AF37" stroke-opacity="0.4" stroke-width="6"/>
+    <!-- Crescent and subtle minaret silhouette -->
+    <path d="M22 -78C-24 -78 -62 -40 -62 6C-62 52 -24 90 22 90C48 90 71 78 86 59C68 68 48 70 28 62C-6 49 -25 12 -14 -24C-6 -50 15 -68 40 -75C34 -77 28 -78 22 -78Z" fill="#F8FAFC"/>
+    <circle cx="54" cy="-22" r="14" fill="#D4AF37"/>
+  </g>
+</svg>
