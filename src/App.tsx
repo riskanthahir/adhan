@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import {
   Calendar,
-  Compass,
   Home,
   Settings,
   Volume2,
@@ -309,144 +309,163 @@ export default function App() {
   ];
 
   return (
-    <div className="min-h-screen bg-stone-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
-      {/* Desktop & Mobile Top Navigation */}
-      <header className="sticky top-0 z-30 border-b border-stone-200 bg-white/90 backdrop-blur-md pt-safe dark:border-slate-800 dark:bg-slate-950/90">
-        <div className="mx-auto flex h-[52px] max-w-6xl items-center justify-between gap-8 px-4 sm:h-16 sm:px-6">
-          <button
-            type="button"
-            onClick={() => setActiveTab('today')}
-            className="font-display text-lg font-bold tracking-tight text-emerald-900 whitespace-nowrap shrink-0 dark:text-emerald-300"
-          >
-            My Adhan
-          </button>
-
-          <nav className="hidden md:flex items-center gap-6" aria-label="Primary navigation">
-            {navItems.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setActiveTab(item.id)}
-                className={`min-h-[44px] border-b-2 text-sm font-medium transition-colors whitespace-nowrap shrink-0 ${
-                  activeTab === item.id
-                    ? 'border-emerald-800 text-emerald-900 dark:border-emerald-400 dark:text-emerald-300'
-                    : 'border-transparent text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
-          </nav>
-
-          <div className="flex items-center gap-2 shrink-0">
-            <div className="hidden sm:block">
-              <PWAInstallButton compact />
-            </div>
+    <MotionConfig reducedMotion="user">
+      <div className="min-h-screen bg-stone-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+        {/* Clean Top Header */}
+        <header className="sticky top-0 z-30 border-b border-stone-200 bg-white/90 backdrop-blur-md pt-safe dark:border-slate-800 dark:bg-slate-950/90">
+          <div className="mx-auto flex h-[52px] max-w-6xl items-center justify-between gap-8 px-4 sm:h-16 sm:px-6">
             <button
               type="button"
-              onClick={() => setLocationModalOpen(true)}
-              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-stone-300 bg-stone-50 px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-stone-100 whitespace-nowrap shrink-0 sm:hidden dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              onClick={() => setActiveTab('today')}
+              className="font-display text-lg font-bold tracking-tight text-emerald-900 whitespace-nowrap shrink-0 dark:text-emerald-300"
             >
-              <Compass className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
-              <span>Group {selectedZone.id}</span>
+              My Adhan
             </button>
+
+            <nav className="hidden md:flex items-center gap-6" aria-label="Primary navigation">
+              {navItems.map((item) => {
+                const active = activeTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setActiveTab(item.id)}
+                    className={`relative min-h-[44px] text-sm font-medium transition-colors whitespace-nowrap shrink-0 ${
+                      active
+                        ? 'text-emerald-900 dark:text-emerald-300'
+                        : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
+                    }`}
+                  >
+                    {item.label}
+                    {active && (
+                      <motion.span
+                        layoutId="desktop-nav-underline"
+                        transition={{ type: 'spring', stiffness: 450, damping: 36 }}
+                        className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-800 dark:bg-emerald-400"
+                      />
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
+
+            <div className="hidden sm:flex items-center gap-2 shrink-0">
+              <PWAInstallButton compact />
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
 
-      {/* Main Content */}
-      <main className="mx-auto max-w-6xl px-4 py-6 pb-24 sm:px-6 md:pb-10">
-        {activeTab === 'today' && (
-          <HomeView
-            selectedDistrict={selectedDistrict}
-            selectedZone={selectedZone}
-            detectionMethod={savedLocation.detectionMethod}
-            todaySchedule={todaySchedule}
-            tomorrowSchedule={tomorrowSchedule}
-            preferences={preferences}
-            onOpenLocationModal={() => setLocationModalOpen(true)}
-            onTogglePrayerReminder={handleTogglePrayerReminder}
-            onPreviewAudio={() => void handlePreviewSelectedAudio()}
-            onNavigateTab={(tab) => setActiveTab(tab)}
-          />
-        )}
+        {/* Main Content with Smooth View Transitions */}
+        <main className="mx-auto max-w-6xl px-3.5 py-4 pb-24 sm:px-6 sm:py-6 md:pb-10">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeTab}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+            >
+              {activeTab === 'today' && (
+                <HomeView
+                  selectedDistrict={selectedDistrict}
+                  selectedZone={selectedZone}
+                  detectionMethod={savedLocation.detectionMethod}
+                  todaySchedule={todaySchedule}
+                  tomorrowSchedule={tomorrowSchedule}
+                  preferences={preferences}
+                  onOpenLocationModal={() => setLocationModalOpen(true)}
+                  onTogglePrayerReminder={handleTogglePrayerReminder}
+                  onPreviewAudio={() => void handlePreviewSelectedAudio()}
+                  onNavigateTab={(tab) => setActiveTab(tab)}
+                />
+              )}
 
-        {activeTab === 'timetable' && (
-          <TimetableView
-            zones={zones}
-            defaultZoneId={selectedZone.id}
-          />
-        )}
+              {activeTab === 'timetable' && (
+                <TimetableView
+                  zones={zones}
+                  defaultZoneId={selectedZone.id}
+                />
+              )}
 
-        {activeTab === 'audio' && (
-          <AudioRemindersView
-            serverTracks={BUILTIN_AUDIO_TRACKS}
-            preferences={preferences}
-            capabilities={capabilities}
-            scheduledSummaries={scheduledSummaries}
-            hasVerifiedToday={Boolean(todaySchedule.isVerified && todaySchedule.times)}
-            onUpdatePreferences={updatePreferences}
-            onRequestNotificationPermission={handleRequestNotificationPermission}
-            onSendTestNotification={handleSendTestNotification}
-          />
-        )}
+              {activeTab === 'audio' && (
+                <AudioRemindersView
+                  serverTracks={BUILTIN_AUDIO_TRACKS}
+                  preferences={preferences}
+                  capabilities={capabilities}
+                  scheduledSummaries={scheduledSummaries}
+                  hasVerifiedToday={Boolean(todaySchedule.isVerified && todaySchedule.times)}
+                  onUpdatePreferences={updatePreferences}
+                  onRequestNotificationPermission={handleRequestNotificationPermission}
+                  onSendTestNotification={handleSendTestNotification}
+                />
+              )}
 
-        {activeTab === 'settings' && (
-          <SettingsAboutView
-            zones={zones}
-            preferences={preferences}
-            onUpdatePreferences={updatePreferences}
-          />
-        )}
-      </main>
+              {activeTab === 'settings' && (
+                <SettingsAboutView
+                  zones={zones}
+                  preferences={preferences}
+                  onUpdatePreferences={updatePreferences}
+                />
+              )}
+            </motion.div>
+          </AnimatePresence>
+        </main>
 
-      {/* Mobile Thumb-Zone Bottom Tab Bar */}
-      <nav
-        aria-label="Mobile navigation"
-        className="fixed bottom-0 left-0 right-0 z-40 border-t border-stone-200 bg-white/95 backdrop-blur-md pb-safe md:hidden dark:border-slate-800 dark:bg-slate-950/95"
-      >
-        <div className="grid h-14 grid-cols-4">
-          {navItems.map((item) => {
-            const active = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setActiveTab(item.id)}
-                className={`flex min-h-[44px] flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors ${
-                  active
-                    ? 'text-emerald-800 dark:text-emerald-300'
-                    : 'text-slate-500 dark:text-slate-400'
-                }`}
-              >
-                {item.icon}
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </nav>
-
-      {/* Offline Indicator */}
-      {!isOnline && (
-        <div
-          role="status"
-          className="fixed bottom-16 left-4 z-50 flex items-center gap-2 rounded-xl bg-amber-800 px-3 py-2 text-xs font-medium text-white shadow-lg md:bottom-4"
+        {/* Mobile Thumb-Zone Bottom Tab Bar */}
+        <nav
+          aria-label="Mobile navigation"
+          className="fixed bottom-0 left-0 right-0 z-40 border-t border-stone-200 bg-white/95 backdrop-blur-md pb-safe md:hidden dark:border-slate-800 dark:bg-slate-950/95"
         >
-          <WifiOff className="h-3.5 w-3.5" aria-hidden="true" />
-          <span>Offline mode — embedded timetable active</span>
-        </div>
-      )}
+          <div className="grid h-14 grid-cols-4">
+            {navItems.map((item) => {
+              const active = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setActiveTab(item.id)}
+                  className={`relative flex min-h-[44px] flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors ${
+                    active
+                      ? 'text-emerald-800 dark:text-emerald-300'
+                      : 'text-slate-500 dark:text-slate-400'
+                  }`}
+                >
+                  {active && (
+                    <motion.span
+                      layoutId="mobile-nav-indicator"
+                      transition={{ type: 'spring', stiffness: 460, damping: 36 }}
+                      className="absolute top-0 left-4 right-4 h-0.5 rounded-b bg-emerald-700 dark:bg-emerald-400"
+                    />
+                  )}
+                  {item.icon}
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </nav>
 
-      {/* Location & Zone Modal */}
-      <LocationSelectorModal
-        isOpen={locationModalOpen}
-        onClose={() => setLocationModalOpen(false)}
-        districts={districts}
-        zones={zones}
-        currentDistrictId={selectedDistrict.id}
-        onSelectLocation={handleSelectLocation}
-      />
-    </div>
+        {/* Offline Indicator */}
+        {!isOnline && (
+          <div
+            role="status"
+            className="fixed bottom-16 left-4 z-50 flex items-center gap-2 rounded-xl bg-amber-800 px-3 py-2 text-xs font-medium text-white shadow-lg md:bottom-4"
+          >
+            <WifiOff className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>Offline mode — embedded timetable active</span>
+          </div>
+        )}
+
+        {/* Location & Zone Modal */}
+        <LocationSelectorModal
+          isOpen={locationModalOpen}
+          onClose={() => setLocationModalOpen(false)}
+          districts={districts}
+          zones={zones}
+          currentDistrictId={selectedDistrict.id}
+          onSelectLocation={handleSelectLocation}
+        />
+      </div>
+    </MotionConfig>
   );
 }
