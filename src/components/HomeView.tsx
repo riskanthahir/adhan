@@ -5,13 +5,17 @@ import {
   BellOff,
   Calendar,
   ChevronRight,
+  Clock,
   MapPin,
   Sunrise,
   Volume2,
+  X,
 } from 'lucide-react';
 import {
   colomboDateTimeToEpochMs,
   computeNextPrayer,
+  formatCountdownSeconds,
+  formatMinutesToHHMM,
   formatTime12h,
   getColomboNowParts,
   getEstimatedHijriDate,
@@ -26,6 +30,12 @@ import {
   type UserPreferences,
 } from '../shared/types';
 
+export interface LiveTestAlarmState {
+  timeHHMM: string;
+  triggerAtEpochMs: number;
+  fired: boolean;
+}
+
 interface HomeViewProps {
   selectedDistrict: AcjuDistrict;
   selectedZone: AcjuZone;
@@ -34,6 +44,9 @@ interface HomeViewProps {
   todaySchedule: ResolvedDaySchedule;
   tomorrowSchedule: ResolvedDaySchedule;
   preferences: UserPreferences;
+  testAlarm: LiveTestAlarmState | null;
+  onArmTestAlarm: (timeHHMM: string) => void;
+  onClearTestAlarm: () => void;
   onOpenLocationModal: () => void;
   onTogglePrayerReminder: (prayer: PrayerName) => void;
   onPreviewAudio: () => void;
@@ -48,12 +61,19 @@ export const HomeView: React.FC<HomeViewProps> = ({
   todaySchedule,
   tomorrowSchedule,
   preferences,
+  testAlarm,
+  onArmTestAlarm,
+  onClearTestAlarm,
   onOpenLocationModal,
   onTogglePrayerReminder,
   onPreviewAudio,
   onNavigateTab,
 }) => {
   const [now, setNow] = useState(() => new Date());
+  const [testTimeInput, setTestTimeInput] = useState(() => {
+    const c = getColomboNowParts();
+    return formatMinutesToHHMM(c.hours * 60 + c.minutes + 2);
+  });
 
   useEffect(() => {
     const id = window.setInterval(() => setNow(new Date()), 1000);
@@ -396,6 +416,83 @@ export const HomeView: React.FC<HomeViewProps> = ({
                         >
                           <Sunrise className="h-4 w-4" />
                         </div>
+                      </div>
+                    </motion.div>
+                  )}
+                  {prayer === 'isha' && (
+                    <motion.div
+                      layout
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{
+                        duration: 0.24,
+                        delay: 0.22,
+                        ease: [0.22, 1, 0.36, 1],
+                      }}
+                      className={`flex flex-col gap-3 rounded-2xl border border-dashed px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5 ${
+                        testAlarm && !testAlarm.fired
+                          ? 'border-emerald-600 bg-emerald-50/60 dark:border-emerald-500/70 dark:bg-emerald-950/30'
+                          : 'border-stone-300 bg-stone-50/80 dark:border-slate-700 dark:bg-slate-900/60'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm sm:text-base font-semibold text-slate-900 dark:text-slate-100">
+                            Sample Adhan
+                          </span>
+                          <span className="rounded-md bg-stone-200/80 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                            Live Test
+                          </span>
+                        </div>
+                        <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                          {testAlarm
+                            ? testAlarm.fired
+                              ? `Triggered at ${formatTime12h(testAlarm.timeHHMM)} — check notification & Adhan`
+                              : `Armed for ${formatTime12h(testAlarm.timeHHMM)} · in ${formatCountdownSeconds(
+                                  Math.max(
+                                    0,
+                                    Math.floor((testAlarm.triggerAtEpochMs - now.getTime()) / 1000)
+                                  )
+                                )}`
+                            : `Colombo now ${colombo.formattedTime.slice(0, 5)} · Set manual time to test alert & Adhan`}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <div className="relative flex-1 sm:flex-initial">
+                          <Clock
+                            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
+                            aria-hidden="true"
+                          />
+                          <input
+                            type="time"
+                            value={testTimeInput}
+                            onChange={(e) => setTestTimeInput(e.target.value)}
+                            aria-label="Sample Adhan test time (Asia/Colombo)"
+                            className="min-h-[42px] w-full rounded-xl border border-stone-300 bg-white pl-8 pr-2.5 font-mono-tabular text-sm text-slate-900 focus:border-emerald-700 focus:outline-none sm:w-auto dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                          />
+                        </div>
+
+                        <motion.button
+                          whileTap={{ scale: 0.95 }}
+                          type="button"
+                          onClick={() => onArmTestAlarm(testTimeInput)}
+                          disabled={!testTimeInput}
+                          className="inline-flex min-h-[42px] items-center justify-center rounded-xl bg-emerald-800 px-3.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-900 disabled:opacity-45 dark:bg-emerald-700 dark:hover:bg-emerald-600"
+                        >
+                          {testAlarm && !testAlarm.fired ? 'Update' : 'Set Test'}
+                        </motion.button>
+
+                        {testAlarm && (
+                          <button
+                            type="button"
+                            onClick={onClearTestAlarm}
+                            aria-label="Clear sample Adhan test"
+                            className="inline-flex min-h-[42px] min-w-[42px] items-center justify-center rounded-xl border border-stone-300 bg-white text-slate-500 hover:bg-stone-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        )}
                       </div>
                     </motion.div>
                   )}

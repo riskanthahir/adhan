@@ -12,7 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { AudioRemindersView } from './components/AudioRemindersView';
-import { HomeView } from './components/HomeView';
+import { HomeView, type LiveTestAlarmState } from './components/HomeView';
 import { LocationSelectorModal } from './components/LocationSelectorModal';
 import { PermissionsModal } from './components/PermissionsModal';
 import { PWAInstallButton } from './components/PWAInstallModal';
@@ -32,7 +32,11 @@ import {
 import { resolveEmbeddedDaySchedule } from './shared/acju2026Timetable';
 import { ACJU_DISTRICTS, ACJU_ZONES } from './shared/acjuSeed';
 import { resolveLocationFromCoordinates } from './shared/locationLookup';
-import { formatTime12h, getColomboNowParts } from './shared/timetablePolicy';
+import {
+  colomboDateTimeToEpochMs,
+  formatTime12h,
+  getColomboNowParts,
+} from './shared/timetablePolicy';
 import {
   PRAYER_LABELS,
   type AdhanAudioTrack,
@@ -229,7 +233,9 @@ export default function App() {
     prayerTimeHHMM: string;
     isPlaying: boolean;
     audioBlocked: boolean;
+    isTest?: boolean;
   } | null>(null);
+  const [testAlarm, setTestAlarm] = useState<LiveTestAlarmState | null>(null);
 
   const [scheduledSummaries, setScheduledSummaries] = useState<ScheduledReminderSummary[]>([]);
   const reminderAdapterRef = useRef(createReminderAdapter());
@@ -577,11 +583,17 @@ export default function App() {
   }, [playSelectedAdhan]);
 
   const handlePrayerTrigger = useCallback(
-    async (prayer: PrayerName, advanceMinutes: AdvanceMinutesOption, prayerTimeHHMM: string) => {
-      const title =
-        advanceMinutes > 0
-          ? `${PRAYER_LABELS[prayer]} in ${advanceMinutes} min (${formatTime12h(prayerTimeHHMM)})`
-          : `${PRAYER_LABELS[prayer]} Prayer Time (${formatTime12h(prayerTimeHHMM)})`;
+    async (
+      prayer: PrayerName,
+      advanceMinutes: AdvanceMinutesOption,
+      prayerTimeHHMM: string,
+      isTest = false
+    ) => {
+      const title = isTest
+        ? `Sample Adhan Test (${formatTime12h(prayerTimeHHMM)})`
+        : advanceMinutes > 0
+        ? `${PRAYER_LABELS[prayer]} in ${advanceMinutes} min (${formatTime12h(prayerTimeHHMM)})`
+        : `${PRAYER_LABELS[prayer]} Prayer Time (${formatTime12h(prayerTimeHHMM)})`;
 
       setActiveAdhanAlert({
         prayer,
@@ -589,6 +601,7 @@ export default function App() {
         prayerTimeHHMM,
         isPlaying: true,
         audioBlocked: false,
+        isTest,
       });
 
       const played = await playSelectedAdhan(title, () => {
@@ -603,6 +616,46 @@ export default function App() {
     },
     [playSelectedAdhan]
   );
+
+  const handleArmTestAlarm = useCallback(
+    async (timeHHMM: string) => {
+      if (!/^\d{2}:\d{2}$/.test(timeHHMM)) return;
+      await unlockAudioForSession();
+      if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+        await reminderAdapterRef.current.requestPermission();
+        setCapabilities(reminderAdapterRef.current.getCapabilities());
+      }
+
+      const nowColombo = getColomboNowParts();
+      let targetEpochMs = colomboDateTimeToEpochMs(nowColombo.dateISO, timeHHMM);
+      if (targetEpochMs <= Date.now()) {
+        // If chosen HH:MM has already passed today in Colombo time, schedule for tomorrow
+        targetEpochMs = colomboDateTimeToEpochMs(getTomorrowColomboISO(nowColombo.dateISO), timeHHMM);
+      }
+
+      setTestAlarm({
+        timeHHMM,
+        triggerAtEpochMs: targetEpochMs,
+        fired: false,
+      });
+
+      reminderAdapterRef.current.scheduleTestTime?.({
+        triggerAtEpochMs: targetEpochMs,
+        timeHHMM,
+        zoneName: selectedZone.name,
+        onTrigger: (firedHHMM) => {
+          setTestAlarm((prev) => (prev ? { ...prev, fired: true } : null));
+          void handlePrayerTrigger('isha', 0, firedHHMM, true);
+        },
+      });
+    },
+    [selectedZone.name, handlePrayerTrigger]
+  );
+
+  const handleClearTestAlarm = useCallback(() => {
+    reminderAdapterRef.current.clearTestTime?.();
+    setTestAlarm(null);
+  }, []);
 
   // Refresh scheduled reminders whenever schedule, zone, or preferences change
   useEffect(() => {
@@ -784,7 +837,9 @@ export default function App() {
                   <Bell className="h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
                   <div className="min-w-0">
                     <p className="text-sm font-semibold truncate">
-                      {activeAdhanAlert.advanceMinutes > 0
+                      {activeAdhanAlert.isTest
+                        ? 'Sample Adhan (Live Test)'
+                        : activeAdhanAlert.advanceMinutes > 0
                         ? `${PRAYER_LABELS[activeAdhanAlert.prayer]} in ${activeAdhanAlert.advanceMinutes} min`
                         : `${PRAYER_LABELS[activeAdhanAlert.prayer]} Prayer Time`}{' '}
                       · {formatTime12h(activeAdhanAlert.prayerTimeHHMM)}
@@ -867,6 +922,9 @@ export default function App() {
                   todaySchedule={todaySchedule}
                   tomorrowSchedule={tomorrowSchedule}
                   preferences={preferences}
+                  testAlarm={testAlarm}
+                  onArmTestAlarm={(timeHHMM) => void handleArmTestAlarm(timeHHMM)}
+                  onClearTestAlarm={handleClearTestAlarm}
                   onOpenLocationModal={() => setLocationModalOpen(true)}
                   onTogglePrayerReminder={handleTogglePrayerReminder}
                   onPreviewAudio={() => void handlePreviewSelectedAudio()}

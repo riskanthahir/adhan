@@ -41,6 +41,13 @@ export interface ReminderAdapter {
     zoneName: string;
     onTrigger?: (prayer: PrayerName, advanceMinutes: AdvanceMinutesOption, prayerTimeHHMM: string) => void;
   }): ScheduledReminderSummary[];
+  scheduleTestTime?: (params: {
+    triggerAtEpochMs: number;
+    timeHHMM: string;
+    zoneName: string;
+    onTrigger?: (timeHHMM: string) => void;
+  }) => void;
+  clearTestTime?: () => void;
   checkDueRemindersNow(): void;
   cancelAll(): void;
   sendTestNotification(zoneName: string): Promise<boolean>;
@@ -102,6 +109,14 @@ export class WebNotificationReminderAdapter implements ReminderAdapter {
     advanceMinutes: AdvanceMinutesOption,
     prayerTimeHHMM: string
   ) => void;
+  private testTarget: {
+    triggerAtEpochMs: number;
+    timeHHMM: string;
+    zoneName: string;
+    fired: boolean;
+    onTrigger?: (timeHHMM: string) => void;
+  } | null = null;
+  private testTimerId: number | null = null;
   private dedupe = new ReminderDedupeRegistry();
 
   private isStandalone(): boolean {
@@ -223,6 +238,60 @@ export class WebNotificationReminderAdapter implements ReminderAdapter {
     this.activeOnTrigger?.(target.prayer, target.advanceMinutes, target.prayerTimeHHMM);
   }
 
+  private fireTestTarget(): void {
+    if (!this.testTarget || this.testTarget.fired) return;
+    this.testTarget.fired = true;
+    const { timeHHMM, zoneName, triggerAtEpochMs, onTrigger } = this.testTarget;
+    const formatted12 = formatTime12h(timeHHMM);
+    void this.showNotification(
+      `Sample Adhan Test (${formatted12})`,
+      `${zoneName} · Live Notification & Adhan Playback Check`,
+      `live-test-${triggerAtEpochMs}`
+    );
+    onTrigger?.(timeHHMM);
+  }
+
+  clearTestTime(): void {
+    if (this.testTimerId !== null) {
+      window.clearTimeout(this.testTimerId);
+      this.testTimerId = null;
+    }
+    this.testTarget = null;
+  }
+
+  scheduleTestTime(params: {
+    triggerAtEpochMs: number;
+    timeHHMM: string;
+    zoneName: string;
+    onTrigger?: (timeHHMM: string) => void;
+  }): void {
+    this.clearTestTime();
+    this.testTarget = {
+      ...params,
+      fired: false,
+    };
+
+    const delayMs = params.triggerAtEpochMs - Date.now();
+    if (delayMs <= 0) {
+      if (delayMs >= -CATCHUP_GRACE_MS) {
+        this.fireTestTarget();
+      }
+      return;
+    }
+
+    if (delayMs <= 24 * 60 * 60 * 1000) {
+      this.testTimerId = window.setTimeout(() => {
+        this.fireTestTarget();
+      }, delayMs);
+    }
+
+    if (this.pollIntervalId === null) {
+      this.pollIntervalId = window.setInterval(() => {
+        this.checkDueRemindersNow();
+      }, 15_000);
+    }
+  }
+
   checkDueRemindersNow(): void {
     const nowMs = Date.now();
     for (const target of this.activeTargets) {
@@ -230,6 +299,13 @@ export class WebNotificationReminderAdapter implements ReminderAdapter {
       const elapsedSinceTrigger = nowMs - target.triggerAtEpochMs;
       if (elapsedSinceTrigger >= 0 && elapsedSinceTrigger <= CATCHUP_GRACE_MS) {
         this.fireTarget(target);
+      }
+    }
+
+    if (this.testTarget && !this.testTarget.fired) {
+      const elapsed = nowMs - this.testTarget.triggerAtEpochMs;
+      if (elapsed >= 0 && elapsed <= CATCHUP_GRACE_MS) {
+        this.fireTestTarget();
       }
     }
   }
