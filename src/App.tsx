@@ -1,20 +1,30 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import {
+  Bell,
   Calendar,
   Home,
+  Play,
   Settings,
+  Square,
   Volume2,
   WifiOff,
+  X,
 } from 'lucide-react';
 import { AudioRemindersView } from './components/AudioRemindersView';
 import { HomeView } from './components/HomeView';
 import { LocationSelectorModal } from './components/LocationSelectorModal';
+import { PermissionsModal } from './components/PermissionsModal';
 import { PWAInstallButton } from './components/PWAInstallModal';
 import { SettingsAboutView } from './components/SettingsAboutView';
 import { TimetableView } from './components/TimetableView';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
-import { listLocalAudioTracks, playAdhanTrack } from './lib/audioEngine';
+import {
+  listLocalAudioTracks,
+  playAdhanTrack,
+  stopAdhanPlayback,
+  unlockAudioForSession,
+} from './lib/audioEngine';
 import {
   createReminderAdapter,
   type ScheduledReminderSummary,
@@ -22,12 +32,14 @@ import {
 import { resolveEmbeddedDaySchedule } from './shared/acju2026Timetable';
 import { ACJU_DISTRICTS, ACJU_ZONES } from './shared/acjuSeed';
 import { resolveLocationFromCoordinates } from './shared/locationLookup';
-import { getColomboNowParts } from './shared/timetablePolicy';
-import type {
-  AdhanAudioTrack,
-  LocationResolution,
-  PrayerName,
-  UserPreferences,
+import { formatTime12h, getColomboNowParts } from './shared/timetablePolicy';
+import {
+  PRAYER_LABELS,
+  type AdhanAudioTrack,
+  type AdvanceMinutesOption,
+  type LocationResolution,
+  type PrayerName,
+  type UserPreferences,
 } from './shared/types';
 
 type AppTab = 'today' | 'timetable' | 'audio' | 'settings';
@@ -36,6 +48,7 @@ const PREFS_STORAGE_KEY = 'my_adhan_prefs_v2';
 const LEGACY_PREFS_STORAGE_KEY = 'my_adhan_prefs_v1';
 const LOCATION_STORAGE_KEY = 'my_adhan_location_v1';
 const LOCATION_PROMPTED_KEY = 'my_adhan_location_prompted_v1';
+const PERMISSIONS_ONBOARDED_KEY = 'my_adhan_permissions_onboarded_v1';
 const LOCATION_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const LOCATION_RESUME_MIN_GAP_MS = 60 * 1000;
 
@@ -203,12 +216,39 @@ export default function App() {
   const [preferences, setPreferences] = useState<UserPreferences>(loadSavedPreferences);
   const [savedLocation, setSavedLocation] = useState<SavedLocation>(loadSavedLocation);
   const [locationModalOpen, setLocationModalOpen] = useState(false);
+  const [permissionsModalOpen, setPermissionsModalOpen] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(PERMISSIONS_ONBOARDED_KEY) !== '1';
+    } catch {
+      return false;
+    }
+  });
+  const [activeAdhanAlert, setActiveAdhanAlert] = useState<{
+    prayer: PrayerName;
+    advanceMinutes: AdvanceMinutesOption;
+    prayerTimeHHMM: string;
+    isPlaying: boolean;
+    audioBlocked: boolean;
+  } | null>(null);
 
   const [scheduledSummaries, setScheduledSummaries] = useState<ScheduledReminderSummary[]>([]);
   const reminderAdapterRef = useRef(createReminderAdapter());
   const [capabilities, setCapabilities] = useState(() =>
     reminderAdapterRef.current.getCapabilities()
   );
+
+  // Unlock browser audio on the first user gesture so prayer-time Adhan can play automatically
+  useEffect(() => {
+    const handleFirstGesture = () => {
+      void unlockAudioForSession();
+    };
+    window.addEventListener('pointerdown', handleFirstGesture, { passive: true });
+    window.addEventListener('keydown', handleFirstGesture, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', handleFirstGesture);
+      window.removeEventListener('keydown', handleFirstGesture);
+    };
+  }, []);
 
   // Sync theme to documentElement
   useEffect(() => {
@@ -302,6 +342,7 @@ export default function App() {
 
   // Ask location permission once on first visit, then check regularly to keep ACJU group/zone updated
   useEffect(() => {
+    if (permissionsModalOpen) return;
     if (typeof navigator === 'undefined' || !('geolocation' in navigator)) return;
 
     let cancelled = false;
@@ -487,7 +528,7 @@ export default function App() {
         permissionStatus.onchange = null;
       }
     };
-  }, [districts, zones, savedLocation.autoUpdate, savedLocation.detectionMethod]);
+  }, [districts, zones, savedLocation.autoUpdate, savedLocation.detectionMethod, permissionsModalOpen]);
 
   const handleTogglePrayerReminder = (prayer: PrayerName) => {
     updatePreferences({
@@ -498,21 +539,70 @@ export default function App() {
     });
   };
 
+  const playSelectedAdhan = useCallback(
+    async (mediaTitle?: string, onEnded?: () => void): Promise<boolean> => {
+      const localTracks = await listLocalAudioTracks();
+      const all = [...BUILTIN_AUDIO_TRACKS, ...localTracks];
+      const track = all.find((t) => t.id === preferences.selectedAudioId) ?? all[0];
+      if (!track) return false;
+      try {
+        await playAdhanTrack({
+          track,
+          volume: preferences.volume,
+          playbackMode: preferences.playbackMode,
+          mediaTitle: mediaTitle ?? track.title,
+          mediaArtist: `${selectedDistrict.name} · ${selectedZone.name}`,
+          onEnded,
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [
+      preferences.selectedAudioId,
+      preferences.volume,
+      preferences.playbackMode,
+      selectedDistrict.name,
+      selectedZone.name,
+    ]
+  );
+
   const handlePreviewSelectedAudio = useCallback(async () => {
-    const localTracks = await listLocalAudioTracks();
-    const all = [...BUILTIN_AUDIO_TRACKS, ...localTracks];
-    const track = all.find((t) => t.id === preferences.selectedAudioId) ?? all[0];
-    if (!track) return;
-    try {
-      await playAdhanTrack({
-        track,
-        volume: preferences.volume,
-        playbackMode: preferences.playbackMode,
-      });
-    } catch {
+    await unlockAudioForSession();
+    const ok = await playSelectedAdhan('My Adhan — Audio Test');
+    if (!ok) {
       setActiveTab('audio');
     }
-  }, [preferences.selectedAudioId, preferences.volume, preferences.playbackMode]);
+  }, [playSelectedAdhan]);
+
+  const handlePrayerTrigger = useCallback(
+    async (prayer: PrayerName, advanceMinutes: AdvanceMinutesOption, prayerTimeHHMM: string) => {
+      const title =
+        advanceMinutes > 0
+          ? `${PRAYER_LABELS[prayer]} in ${advanceMinutes} min (${formatTime12h(prayerTimeHHMM)})`
+          : `${PRAYER_LABELS[prayer]} Prayer Time (${formatTime12h(prayerTimeHHMM)})`;
+
+      setActiveAdhanAlert({
+        prayer,
+        advanceMinutes,
+        prayerTimeHHMM,
+        isPlaying: true,
+        audioBlocked: false,
+      });
+
+      const played = await playSelectedAdhan(title, () => {
+        setActiveAdhanAlert((prev) => (prev ? { ...prev, isPlaying: false } : null));
+      });
+
+      if (!played) {
+        setActiveAdhanAlert((prev) =>
+          prev ? { ...prev, isPlaying: false, audioBlocked: true } : null
+        );
+      }
+    },
+    [playSelectedAdhan]
+  );
 
   // Refresh scheduled reminders whenever schedule, zone, or preferences change
   useEffect(() => {
@@ -520,23 +610,110 @@ export default function App() {
       schedule: todaySchedule,
       preferences,
       zoneName: selectedZone.name,
-      onTrigger: () => {
-        void handlePreviewSelectedAudio();
+      onTrigger: (prayer, advanceMinutes, prayerTimeHHMM) => {
+        void handlePrayerTrigger(prayer, advanceMinutes, prayerTimeHHMM);
       },
     });
     setScheduledSummaries(summaries);
     setCapabilities(reminderAdapterRef.current.getCapabilities());
-  }, [todaySchedule, preferences, selectedZone.name, handlePreviewSelectedAudio]);
+  }, [todaySchedule, preferences, selectedZone.name, handlePrayerTrigger]);
+
+  // Check for due/missed prayer alerts whenever app wakes or returns to foreground
+  useEffect(() => {
+    const checkOnWake = () => {
+      if (document.visibilityState && document.visibilityState !== 'visible') return;
+      reminderAdapterRef.current.checkDueRemindersNow();
+    };
+    document.addEventListener('visibilitychange', checkOnWake);
+    window.addEventListener('focus', checkOnWake);
+    window.addEventListener('pageshow', checkOnWake);
+    return () => {
+      document.removeEventListener('visibilitychange', checkOnWake);
+      window.removeEventListener('focus', checkOnWake);
+      window.removeEventListener('pageshow', checkOnWake);
+    };
+  }, []);
 
   const handleRequestNotificationPermission = async () => {
+    await unlockAudioForSession();
     await reminderAdapterRef.current.requestPermission();
     setCapabilities(reminderAdapterRef.current.getCapabilities());
   };
 
-  const handleSendTestNotification = async () => {
-    await reminderAdapterRef.current.sendTestNotification(selectedZone.name);
+  const handleSendTestNotification = async (): Promise<boolean> => {
+    await unlockAudioForSession();
+    const sent = await reminderAdapterRef.current.sendTestNotification(selectedZone.name);
     setCapabilities(reminderAdapterRef.current.getCapabilities());
+    return sent;
   };
+
+  const handleCompleteOnboarding = useCallback(() => {
+    try {
+      localStorage.setItem(PERMISSIONS_ONBOARDED_KEY, '1');
+      localStorage.setItem(LOCATION_PROMPTED_KEY, '1');
+    } catch {
+      // Ignore storage errors
+    }
+    setPermissionsModalOpen(false);
+  }, []);
+
+  const handleGrantAllFirstAccessPermissions = useCallback(async () => {
+    await unlockAudioForSession();
+
+    // Request Notification permission inside this user tap
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      await reminderAdapterRef.current.requestPermission();
+      setCapabilities(reminderAdapterRef.current.getCapabilities());
+    }
+
+    // Request Geolocation permission once inside this user tap
+    if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const done = () => {
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+        };
+        const timer = window.setTimeout(done, 8000);
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            window.clearTimeout(timer);
+            lastLocationCheckAtRef.current = Date.now();
+            const resolved = resolveLocationFromCoordinates(
+              pos.coords.latitude,
+              pos.coords.longitude,
+              districts,
+              zones
+            );
+            if (resolved.matched && resolved.district) {
+              const next: SavedLocation = {
+                districtId: resolved.district.id,
+                detectionMethod: 'gps',
+                autoUpdate: true,
+              };
+              setSavedLocation(next);
+              saveLocationToStorage(next);
+            }
+            done();
+          },
+          (err) => {
+            window.clearTimeout(timer);
+            if (err.code === err.PERMISSION_DENIED) {
+              setSavedLocation((prev) => {
+                const next: SavedLocation = { ...prev, autoUpdate: false };
+                saveLocationToStorage(next);
+                return next;
+              });
+            }
+            done();
+          },
+          { enableHighAccuracy: false, timeout: 7500, maximumAge: 60000 }
+        );
+      });
+    }
+  }, [districts, zones]);
 
   const navItems: ReadonlyArray<{ id: AppTab; label: string; icon: React.ReactNode }> = [
     { id: 'today', label: 'Today', icon: <Home className="h-5 w-5" /> },
@@ -592,6 +769,85 @@ export default function App() {
           </div>
         </header>
 
+        {/* Live Prayer Time / Adhan Alert Banner */}
+        <AnimatePresence>
+          {activeAdhanAlert && (
+            <motion.div
+              initial={{ opacity: 0, y: -12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -12 }}
+              role="alert"
+              className="mx-auto mt-3 max-w-6xl px-3.5 sm:px-6"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-700/50 bg-emerald-900 px-4 py-3 text-white shadow-lg">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Bell className="h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold truncate">
+                      {activeAdhanAlert.advanceMinutes > 0
+                        ? `${PRAYER_LABELS[activeAdhanAlert.prayer]} in ${activeAdhanAlert.advanceMinutes} min`
+                        : `${PRAYER_LABELS[activeAdhanAlert.prayer]} Prayer Time`}{' '}
+                      · {formatTime12h(activeAdhanAlert.prayerTimeHHMM)}
+                    </p>
+                    <p className="text-xs text-emerald-100/80">
+                      {activeAdhanAlert.audioBlocked
+                        ? 'Tap Play to start Adhan audio in this browser session'
+                        : activeAdhanAlert.isPlaying
+                        ? 'Playing Adhan…'
+                        : 'Prayer reminder active'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  {activeAdhanAlert.isPlaying ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        stopAdhanPlayback();
+                        setActiveAdhanAlert(null);
+                      }}
+                      className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl bg-amber-300 px-3 py-1.5 text-xs font-semibold text-emerald-950 hover:bg-amber-200"
+                    >
+                      <Square className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
+                      <span>Stop Adhan</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await unlockAudioForSession();
+                        const ok = await playSelectedAdhan(
+                          `${PRAYER_LABELS[activeAdhanAlert.prayer]} Prayer Time`,
+                          () => setActiveAdhanAlert((prev) => (prev ? { ...prev, isPlaying: false } : null))
+                        );
+                        setActiveAdhanAlert((prev) =>
+                          prev ? { ...prev, isPlaying: ok, audioBlocked: !ok } : null
+                        );
+                      }}
+                      className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl bg-amber-300 px-3 py-1.5 text-xs font-semibold text-emerald-950 hover:bg-amber-200"
+                    >
+                      <Play className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
+                      <span>Play Adhan</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    aria-label="Dismiss prayer alert"
+                    onClick={() => {
+                      stopAdhanPlayback();
+                      setActiveAdhanAlert(null);
+                    }}
+                    className="inline-flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl text-emerald-100 hover:bg-white/10"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Main Content with Smooth View Transitions */}
         <main className="mx-auto max-w-6xl px-3.5 py-4 pb-24 sm:px-6 sm:py-6 md:pb-10">
           <AnimatePresence mode="wait">
@@ -632,6 +888,8 @@ export default function App() {
                   capabilities={capabilities}
                   scheduledSummaries={scheduledSummaries}
                   hasVerifiedToday={Boolean(todaySchedule.isVerified && todaySchedule.times)}
+                  selectedDistrict={selectedDistrict}
+                  selectedZone={selectedZone}
                   onUpdatePreferences={updatePreferences}
                   onRequestNotificationPermission={handleRequestNotificationPermission}
                   onSendTestNotification={handleSendTestNotification}
@@ -641,6 +899,8 @@ export default function App() {
               {activeTab === 'settings' && (
                 <SettingsAboutView
                   zones={zones}
+                  selectedDistrict={selectedDistrict}
+                  selectedZone={selectedZone}
                   preferences={preferences}
                   onUpdatePreferences={updatePreferences}
                 />
@@ -704,6 +964,14 @@ export default function App() {
           autoUpdateLocation={savedLocation.autoUpdate}
           onToggleAutoUpdate={handleToggleAutoUpdateLocation}
           onSelectLocation={handleSelectLocation}
+        />
+
+        {/* First-Access Permissions Setup */}
+        <PermissionsModal
+          isOpen={permissionsModalOpen}
+          isIOSBrowserTab={capabilities.isIOS && !capabilities.isStandalonePwa}
+          onComplete={handleCompleteOnboarding}
+          onGrantAll={handleGrantAllFirstAccessPermissions}
         />
       </div>
     </MotionConfig>

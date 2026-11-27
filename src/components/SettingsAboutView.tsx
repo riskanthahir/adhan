@@ -1,15 +1,20 @@
 import React from 'react';
+import { LockScreenSyncCard } from './LockScreenSyncCard';
 import { PWAInstallButton } from './PWAInstallModal';
-import type { AcjuZone, UserPreferences } from '../shared/types';
+import type { AcjuDistrict, AcjuZone, UserPreferences } from '../shared/types';
 
 interface SettingsAboutViewProps {
   zones: readonly AcjuZone[];
+  selectedDistrict: AcjuDistrict;
+  selectedZone: AcjuZone;
   preferences: UserPreferences;
   onUpdatePreferences: (patch: Partial<UserPreferences>) => void;
 }
 
 export const SettingsAboutView: React.FC<SettingsAboutViewProps> = ({
   zones,
+  selectedDistrict,
+  selectedZone,
   preferences,
   onUpdatePreferences,
 }) => {
@@ -69,6 +74,15 @@ export const SettingsAboutView: React.FC<SettingsAboutViewProps> = ({
               Install Progressive Web App
             </p>
             <PWAInstallButton />
+          </div>
+
+          <div className="pt-1">
+            <LockScreenSyncCard
+              district={selectedDistrict}
+              zone={selectedZone}
+              preferences={preferences}
+              compact
+            />
           </div>
         </div>
       </section>

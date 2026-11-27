@@ -19,10 +19,14 @@ import {
   playAdhanTrack,
   saveLocalAudioFile,
   stopAdhanPlayback,
+  unlockAudioForSession,
 } from '../lib/audioEngine';
+import { LockScreenSyncCard } from './LockScreenSyncCard';
 import type { AdapterCapabilities, ScheduledReminderSummary } from '../lib/reminders';
 import { PRAYER_LABELS, PRAYER_NAMES } from '../shared/types';
 import type {
+  AcjuDistrict,
+  AcjuZone,
   AdhanAudioTrack,
   AdvanceMinutesOption,
   PrayerName,
@@ -35,9 +39,11 @@ interface AudioRemindersViewProps {
   capabilities: AdapterCapabilities;
   scheduledSummaries: ScheduledReminderSummary[];
   hasVerifiedToday: boolean;
+  selectedDistrict: AcjuDistrict;
+  selectedZone: AcjuZone;
   onUpdatePreferences: (patch: Partial<UserPreferences>) => void;
   onRequestNotificationPermission: () => Promise<void>;
-  onSendTestNotification: () => Promise<void>;
+  onSendTestNotification: () => Promise<boolean>;
 }
 
 const ADVANCE_OPTIONS: AdvanceMinutesOption[] = [0, 5, 10, 15, 30];
@@ -55,6 +61,8 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
   capabilities,
   scheduledSummaries,
   hasVerifiedToday,
+  selectedDistrict,
+  selectedZone,
   onUpdatePreferences,
   onRequestNotificationPermission,
   onSendTestNotification,
@@ -67,9 +75,6 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
 
   useEffect(() => {
     void listLocalAudioTracks().then(setLocalTracks);
-    return () => {
-      stopAdhanPlayback();
-    };
   }, []);
 
   const allTracks = [...serverTracks, ...localTracks];
@@ -108,6 +113,7 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
 
   const handlePreview = async (track: AdhanAudioTrack) => {
     setAudioMessage(null);
+    await unlockAudioForSession();
     if (playingId === track.id) {
       stopAdhanPlayback();
       setPlayingId(null);
@@ -119,6 +125,8 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
         track,
         volume: preferences.volume,
         playbackMode: preferences.playbackMode,
+        mediaTitle: `${track.title} (Preview)`,
+        mediaArtist: `${selectedDistrict.name} · ${selectedZone.name}`,
         onEnded: () => setPlayingId(null),
       });
     } catch (err) {
@@ -468,7 +476,15 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
             <motion.button
               whileTap={{ scale: 0.97 }}
               type="button"
-              onClick={() => void onRequestNotificationPermission()}
+              onClick={async () => {
+                await unlockAudioForSession();
+                await onRequestNotificationPermission();
+                if (capabilities.isIOS && !capabilities.isStandalonePwa) {
+                  setNotifFeedback(
+                    'On iPhone, add this app to your Home Screen (Share → Add to Home Screen) to enable iOS notifications.'
+                  );
+                }
+              }}
               className="min-h-[44px] rounded-2xl bg-emerald-800 px-3.5 py-2 text-xs font-medium text-white transition-colors hover:bg-emerald-900 dark:bg-emerald-700 dark:hover:bg-emerald-600"
             >
               Enable Notifications
@@ -477,8 +493,19 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
               whileTap={{ scale: 0.97 }}
               type="button"
               onClick={async () => {
-                await onSendTestNotification();
-                setNotifFeedback('Test notification triggered — check your device notification tray.');
+                await unlockAudioForSession();
+                const sent = await onSendTestNotification();
+                if (sent) {
+                  setNotifFeedback('Test notification sent — check your device notification tray.');
+                } else if (capabilities.isIOS && !capabilities.isStandalonePwa) {
+                  setNotifFeedback(
+                    'iPhone Safari tabs hide Web Notifications. Tap Share → Add to Home Screen first, or use Apple Calendar sync below.'
+                  );
+                } else {
+                  setNotifFeedback(
+                    'Notification permission is blocked or unsupported. Enable it in browser settings or use Apple Calendar sync below.'
+                  );
+                }
               }}
               className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-2xl border border-stone-300 bg-stone-50 px-3.5 py-2 text-xs font-medium text-slate-800 transition-colors hover:bg-stone-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
             >
@@ -582,6 +609,14 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
           })}
         </div>
 
+        {/* Optional iPhone Lock Screen Calendar Sync */}
+        <LockScreenSyncCard
+          district={selectedDistrict}
+          zone={selectedZone}
+          preferences={preferences}
+          compact
+        />
+
         {/* Collapsible iOS & Browser Limitations Accordion (keeps mobile viewport compact) */}
         <div className="rounded-2xl border border-stone-200 bg-stone-50/70 dark:border-slate-800 dark:bg-slate-950/50">
           <button
@@ -614,10 +649,10 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
               >
                 <div className="space-y-2 border-t border-stone-200 px-4 py-3 text-xs leading-relaxed text-slate-600 dark:border-slate-800 dark:text-slate-400">
                   <p>
-                    {capabilities.notes} Full Adhan audio cannot be guaranteed when the PWA is closed or backgrounded on iPhone, and browser playback requires at least one user tap per session.
+                    {capabilities.notes} Browser Adhan playback runs automatically when the app is open and you have tapped anywhere in the session.
                   </p>
                   <p>
-                    For guaranteed lock-screen alarms with custom Adhan audio when closed, My Adhan includes a typed <code className="font-mono-tabular">ReminderAdapter</code> interface ready for a native iOS <code className="font-mono-tabular">AlarmKit</code> bridge.
+                    For custom 3-minute Adhan sound or a dedicated multi-row iOS Lock Screen widget when fully closed, a native App Store shell with <code className="font-mono-tabular">WidgetKit</code> &amp; <code className="font-mono-tabular">AlarmKit</code> is required — meanwhile, Apple Calendar sync above adds upcoming prayers to your iPhone Lock Screen right away.
                   </p>
                 </div>
               </motion.div>

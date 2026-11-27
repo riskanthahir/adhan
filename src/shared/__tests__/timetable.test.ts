@@ -16,6 +16,8 @@ import {
   resolveScheduleForDate,
   validateTimetableRows,
 } from '../timetablePolicy';
+import { ACJU_ZONES } from '../acjuSeed';
+import { buildAcjuCalendarIcs } from '../../lib/calendarExport';
 import type { ReferencePrayerRecord } from '../types';
 
 describe('Embedded Official 2026 ACJU Dataset (All 13 Zones × 365 Days)', () => {
@@ -364,5 +366,34 @@ describe('Duplicate Reminder Prevention & Parser Validation', () => {
       maghrib: '18:18',
       isha: '19:28',
     });
+  });
+
+  it('builds valid RFC 5545 .ics calendar events for iPhone Lock Screen Calendar sync and skips Feb 29', () => {
+    const ics = buildAcjuCalendarIcs({
+      zone: ACJU_ZONES[0],
+      districtName: 'Colombo',
+      perPrayerEnabled: {
+        fajr: true,
+        dhuhr: true,
+        asr: true,
+        maghrib: true,
+        isha: true,
+      },
+      advanceMinutes: {
+        fajr: 5,
+        dhuhr: 0,
+        asr: 0,
+        maghrib: 0,
+        isha: 0,
+      },
+      daysCount: 3,
+      startDateISO: '2028-02-28',
+    });
+
+    // 2028-02-28 (5 events) + 2028-02-29 skipped (0 events) + 2028-03-01 (5 events) = 10 VEVENTs
+    expect((ics.match(/BEGIN:VEVENT/g) ?? []).length).toBe(10);
+    expect(ics).toContain('TRIGGER:-PT5M');
+    expect(ics).toContain('SUMMARY:Fajr — 5:07 AM');
+    expect(ics).not.toContain('2028-02-29');
   });
 });
