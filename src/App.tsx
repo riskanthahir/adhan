@@ -14,12 +14,16 @@ import {
 import { AudioRemindersView } from './components/AudioRemindersView';
 import { HomeView, type LiveTestAlarmState } from './components/HomeView';
 import { LocationSelectorModal } from './components/LocationSelectorModal';
-import { PermissionsModal } from './components/PermissionsModal';
+import {
+  PermissionsModal,
+  type LocationPermissionUiState,
+} from './components/PermissionsModal';
 import { PWAInstallButton } from './components/PWAInstallModal';
 import { SettingsAboutView } from './components/SettingsAboutView';
 import { TimetableView } from './components/TimetableView';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import {
+  isAudioSessionUnlocked,
   listLocalAudioTracks,
   playAdhanTrack,
   stopAdhanPlayback,
@@ -242,11 +246,39 @@ export default function App() {
   const [capabilities, setCapabilities] = useState(() =>
     reminderAdapterRef.current.getCapabilities()
   );
+  const [audioUnlocked, setAudioUnlocked] = useState<boolean>(() => isAudioSessionUnlocked());
+  const [onboardingLocationState, setOnboardingLocationState] = useState<LocationPermissionUiState>(
+    () => (typeof navigator !== 'undefined' && 'geolocation' in navigator ? 'idle' : 'unavailable')
+  );
+  const [onboardingLocationLabel, setOnboardingLocationLabel] = useState<string | null>(null);
+  const [onboardingLocationMessage, setOnboardingLocationMessage] = useState<string | null>(null);
+
+  // Inspect existing geolocation permission on mount while onboarding is open
+  useEffect(() => {
+    if (!permissionsModalOpen) return;
+    let active = true;
+    void getGeolocationPermissionState().then((state) => {
+      if (!active) return;
+      if (state === 'granted') {
+        setOnboardingLocationState((prev) => (prev === 'idle' ? 'granted' : prev));
+      } else if (state === 'denied') {
+        setOnboardingLocationState((prev) => (prev === 'idle' ? 'denied' : prev));
+        setOnboardingLocationMessage(
+          'Location is blocked in iPhone/browser settings. Enable it or choose your district manually.'
+        );
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [permissionsModalOpen]);
 
   // Unlock browser audio on the first user gesture so prayer-time Adhan can play automatically
   useEffect(() => {
     const handleFirstGesture = () => {
-      void unlockAudioForSession();
+      void unlockAudioForSession().then((ok) => {
+        if (ok) setAudioUnlocked(true);
+      });
     };
     window.addEventListener('pointerdown', handleFirstGesture, { passive: true });
     window.addEventListener('keydown', handleFirstGesture, { passive: true });
@@ -620,11 +652,20 @@ export default function App() {
   const handleArmTestAlarm = useCallback(
     async (timeHHMM: string) => {
       if (!/^\d{2}:\d{2}$/.test(timeHHMM)) return;
-      await unlockAudioForSession();
-      if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
-        await reminderAdapterRef.current.requestPermission();
+      // Call Notification.requestPermission synchronously before awaiting audio unlock
+      const permPromise =
+        typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default'
+          ? reminderAdapterRef.current.requestPermission()
+          : null;
+      const unlockPromise = unlockAudioForSession().then((ok) => {
+        if (ok) setAudioUnlocked(true);
+        return ok;
+      });
+      if (permPromise) {
+        await permPromise;
         setCapabilities(reminderAdapterRef.current.getCapabilities());
       }
+      await unlockPromise;
 
       const nowColombo = getColomboNowParts();
       let targetEpochMs = colomboDateTimeToEpochMs(nowColombo.dateISO, timeHHMM);
@@ -688,14 +729,20 @@ export default function App() {
   }, []);
 
   const handleRequestNotificationPermission = async () => {
-    await unlockAudioForSession();
-    await reminderAdapterRef.current.requestPermission();
+    const permPromise = reminderAdapterRef.current.requestPermission();
+    void unlockAudioForSession().then((ok) => {
+      if (ok) setAudioUnlocked(true);
+    });
+    await permPromise;
     setCapabilities(reminderAdapterRef.current.getCapabilities());
   };
 
   const handleSendTestNotification = async (): Promise<boolean> => {
-    await unlockAudioForSession();
-    const sent = await reminderAdapterRef.current.sendTestNotification(selectedZone.name);
+    const testPromise = reminderAdapterRef.current.sendTestNotification(selectedZone.name);
+    void unlockAudioForSession().then((ok) => {
+      if (ok) setAudioUnlocked(true);
+    });
+    const sent = await testPromise;
     setCapabilities(reminderAdapterRef.current.getCapabilities());
     return sent;
   };
@@ -710,30 +757,42 @@ export default function App() {
     setPermissionsModalOpen(false);
   }, []);
 
-  const handleGrantAllFirstAccessPermissions = useCallback(async () => {
-    await unlockAudioForSession();
-
-    // Request Notification permission inside this user tap
-    if (typeof window !== 'undefined' && 'Notification' in window) {
-      await reminderAdapterRef.current.requestPermission();
-      setCapabilities(reminderAdapterRef.current.getCapabilities());
+  const handleOnboardingRequestLocation = useCallback((): Promise<LocationPermissionUiState> => {
+    if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
+      setOnboardingLocationState('unavailable');
+      setOnboardingLocationMessage('Geolocation is unavailable here. Choose your district manually.');
+      return Promise.resolve('unavailable');
     }
 
-    // Request Geolocation permission once inside this user tap
-    if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
-      await new Promise<void>((resolve) => {
-        let settled = false;
-        const done = () => {
-          if (!settled) {
-            settled = true;
-            resolve();
-          }
-        };
-        const timer = window.setTimeout(done, 8000);
+    setOnboardingLocationState('requesting');
+    setOnboardingLocationMessage('Waiting for GPS response…');
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (nextState: LocationPermissionUiState) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        setOnboardingLocationState(nextState);
+        resolve(nextState);
+      };
+
+      const timer = window.setTimeout(() => {
+        setOnboardingLocationMessage(
+          'Location request timed out. You can retry or pick your district manually.'
+        );
+        finish('unavailable');
+      }, 9000);
+
+      try {
         navigator.geolocation.getCurrentPosition(
           (pos) => {
-            window.clearTimeout(timer);
             lastLocationCheckAtRef.current = Date.now();
+            try {
+              localStorage.setItem(LOCATION_PROMPTED_KEY, '1');
+            } catch {
+              // Ignore
+            }
             const resolved = resolveLocationFromCoordinates(
               pos.coords.latitude,
               pos.coords.longitude,
@@ -748,25 +807,55 @@ export default function App() {
               };
               setSavedLocation(next);
               saveLocationToStorage(next);
+              setOnboardingLocationLabel(
+                `${resolved.district.name} · ${resolved.zone?.name ?? `Zone ${resolved.district.zoneId}`}`
+              );
+              setOnboardingLocationMessage(null);
+            } else {
+              setOnboardingLocationMessage(
+                'Coordinates retrieved; please verify your district manually.'
+              );
             }
-            done();
+            finish('granted');
           },
           (err) => {
-            window.clearTimeout(timer);
             if (err.code === err.PERMISSION_DENIED) {
               setSavedLocation((prev) => {
                 const next: SavedLocation = { ...prev, autoUpdate: false };
                 saveLocationToStorage(next);
                 return next;
               });
+              setOnboardingLocationMessage(
+                'Blocked in iPhone/browser settings. Enable Location Services for Safari/My Adhan or pick manually.'
+              );
+              finish('denied');
+            } else {
+              setOnboardingLocationMessage(
+                'Could not read GPS right now. Tap Allow to retry or pick manually.'
+              );
+              finish('unavailable');
             }
-            done();
           },
-          { enableHighAccuracy: false, timeout: 7500, maximumAge: 60000 }
+          { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
         );
-      });
-    }
+      } catch {
+        setOnboardingLocationMessage('Could not start GPS lookup. Choose your district manually.');
+        finish('unavailable');
+      }
+    });
   }, [districts, zones]);
+
+  const handleOnboardingRequestNotifications = useCallback(async () => {
+    const perm = await reminderAdapterRef.current.requestPermission();
+    setCapabilities(reminderAdapterRef.current.getCapabilities());
+    return perm;
+  }, []);
+
+  const handleOnboardingUnlockAudio = useCallback(async () => {
+    const ok = await unlockAudioForSession();
+    if (ok) setAudioUnlocked(true);
+    return ok;
+  }, []);
 
   const navItems: ReadonlyArray<{ id: AppTab; label: string; icon: React.ReactNode }> = [
     { id: 'today', label: 'Today', icon: <Home className="h-5 w-5" /> },
@@ -1028,8 +1117,15 @@ export default function App() {
         <PermissionsModal
           isOpen={permissionsModalOpen}
           isIOSBrowserTab={capabilities.isIOS && !capabilities.isStandalonePwa}
+          notificationState={capabilities.permissionState}
+          locationState={onboardingLocationState}
+          locationLabel={onboardingLocationLabel}
+          locationMessage={onboardingLocationMessage}
+          audioUnlocked={audioUnlocked}
+          onRequestLocation={handleOnboardingRequestLocation}
+          onRequestNotifications={handleOnboardingRequestNotifications}
+          onUnlockAudio={handleOnboardingUnlockAudio}
           onComplete={handleCompleteOnboarding}
-          onGrantAll={handleGrantAllFirstAccessPermissions}
         />
       </div>
     </MotionConfig>

@@ -477,8 +477,9 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
               whileTap={{ scale: 0.97 }}
               type="button"
               onClick={async () => {
-                await unlockAudioForSession();
-                await onRequestNotificationPermission();
+                const permPromise = onRequestNotificationPermission();
+                void unlockAudioForSession();
+                await permPromise;
                 if (capabilities.isIOS && !capabilities.isStandalonePwa) {
                   setNotifFeedback(
                     'On iPhone, add this app to your Home Screen (Share → Add to Home Screen) to enable iOS notifications.'
@@ -493,8 +494,9 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
               whileTap={{ scale: 0.97 }}
               type="button"
               onClick={async () => {
-                await unlockAudioForSession();
-                const sent = await onSendTestNotification();
+                const sendPromise = onSendTestNotification();
+                void unlockAudioForSession();
+                const sent = await sendPromise;
                 if (sent) {
                   setNotifFeedback('Test notification sent — check your device notification tray.');
                 } else if (capabilities.isIOS && !capabilities.isStandalonePwa) {

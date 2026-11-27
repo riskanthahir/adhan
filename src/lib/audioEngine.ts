@@ -141,6 +141,7 @@ function getOrCreateAudioElement(): HTMLAudioElement {
   if (!sharedAudioEl) {
     sharedAudioEl = new Audio();
     sharedAudioEl.preload = 'auto';
+    sharedAudioEl.setAttribute('playsinline', '');
   }
   return sharedAudioEl;
 }
@@ -157,20 +158,33 @@ function getOrCreateAudioContext(): AudioContext | null {
 }
 
 /**
- * Unlocks Web Audio and HTMLAudioElement on the first user gesture so scheduled
- * prayer-time Adhan playback succeeds on iOS Safari and mobile Chrome while active.
+ * Unlocks Web Audio and HTMLAudioElement synchronously inside a user gesture so
+ * scheduled prayer-time Adhan playback works on iOS Safari / Home Screen PWAs
+ * without blocking or hanging other permission prompts.
  */
 export async function unlockAudioForSession(): Promise<boolean> {
   if (typeof window === 'undefined') return false;
   if (sessionUnlocked) return true;
 
   let unlocked = false;
+  const tasks: Promise<void>[] = [];
 
   try {
     const ctx = getOrCreateAudioContext();
     if (ctx) {
       if (ctx.state === 'suspended') {
-        await ctx.resume();
+        tasks.push(
+          ctx
+            .resume()
+            .then(() => {
+              unlocked = true;
+            })
+            .catch(() => {
+              // Ignore audio context resume failure
+            })
+        );
+      } else {
+        unlocked = true;
       }
       const buffer = ctx.createBuffer(1, 1, 22050);
       const source = ctx.createBufferSource();
@@ -187,15 +201,38 @@ export async function unlockAudioForSession(): Promise<boolean> {
     if (!isAudioPlaying) {
       const el = getOrCreateAudioElement();
       el.muted = true;
+      el.setAttribute('playsinline', '');
       el.src = SILENT_WAV_DATA_URI;
-      await el.play();
-      el.pause();
-      el.currentTime = 0;
-      el.muted = false;
-      unlocked = true;
+      const playPromise = el.play();
+      if (playPromise && typeof playPromise.then === 'function') {
+        tasks.push(
+          playPromise
+            .then(() => {
+              if (!isAudioPlaying) {
+                el.pause();
+                el.currentTime = 0;
+              }
+              el.muted = false;
+              unlocked = true;
+            })
+            .catch(() => {
+              el.muted = false;
+            })
+        );
+      } else {
+        el.muted = false;
+        unlocked = true;
+      }
     }
   } catch {
     // Will retry on next user interaction
+  }
+
+  if (tasks.length > 0) {
+    await Promise.race([
+      Promise.allSettled(tasks),
+      new Promise<void>((resolve) => window.setTimeout(resolve, 600)),
+    ]);
   }
 
   if (unlocked) {

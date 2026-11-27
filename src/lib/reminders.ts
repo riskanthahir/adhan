@@ -159,17 +159,44 @@ export class WebNotificationReminderAdapter implements ReminderAdapter {
     };
   }
 
-  async requestPermission(): Promise<NotificationPermission | 'unsupported'> {
+  requestPermission(): Promise<NotificationPermission | 'unsupported'> {
     if (typeof window === 'undefined' || !('Notification' in window)) {
-      return 'unsupported';
+      return Promise.resolve('unsupported');
     }
-    if (Notification.permission === 'granted') return 'granted';
-    if (Notification.permission === 'denied') return 'denied';
-    try {
-      return await Notification.requestPermission();
-    } catch {
-      return Notification.permission;
-    }
+    if (Notification.permission === 'granted') return Promise.resolve('granted');
+    if (Notification.permission === 'denied') return Promise.resolve('denied');
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (perm: NotificationPermission) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeoutId);
+        resolve(perm);
+      };
+
+      const timeoutId = window.setTimeout(() => {
+        finish(Notification.permission);
+      }, 15_000);
+
+      try {
+        const res = Notification.requestPermission();
+        if (res && typeof res.then === 'function') {
+          res.then(
+            (perm) => finish(perm),
+            () => finish(Notification.permission)
+          );
+        } else {
+          finish(Notification.permission);
+        }
+      } catch {
+        try {
+          Notification.requestPermission((perm) => finish(perm));
+        } catch {
+          finish(Notification.permission);
+        }
+      }
+    });
   }
 
   cancelAll(): void {
