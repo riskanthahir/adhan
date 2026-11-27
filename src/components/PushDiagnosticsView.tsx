@@ -169,11 +169,12 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
     if (backendDiag) {
       list.push({
         id: 'vapid',
-        label: 'VAPID Configuration',
+        label: 'VAPID Environment Configuration & Key-Pair Match',
         status: backendDiag.vapid.configured ? 'pass' : 'fail',
-        detail: `${backendDiag.vapid.publicKeyPreview} (${
-          backendDiag.vapid.configuredViaEnv ? 'Environment Variable' : 'SQLite Persisted'
-        })`,
+        detail: backendDiag.vapid.configured
+          ? `${backendDiag.vapid.publicKeyPreview} (Environment Variables · Validated Match · ${backendDiag.vapid.subject ?? ''})`
+          : backendDiag.vapid.errorMessage ||
+            'VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_SUBJECT are not configured on the backend server.',
       });
 
       list.push({
@@ -417,6 +418,25 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
           </p>
         )}
       </section>
+
+      {diag && !diag.vapid.configured && (
+        <section className="rounded-3xl border border-amber-300 bg-amber-50 p-4 sm:p-5 text-amber-950 dark:border-amber-700/70 dark:bg-amber-950/40 dark:text-amber-100">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-300" aria-hidden="true" />
+            <div className="space-y-2 text-xs">
+              <h2 className="text-sm font-semibold">
+                VAPID Keys Not Configured ({diag.vapid.status})
+              </h2>
+              <p>{diag.vapid.errorMessage}</p>
+              <ol className="list-decimal space-y-1 pl-4 text-amber-900 dark:text-amber-200">
+                {diag.vapid.setupInstructions.map((step, i) => (
+                  <li key={i}>{step.replace(/^\d+\.\s*/, '')}</li>
+                ))}
+              </ol>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Diagnostic Matrix */}
       <section className="rounded-3xl border border-stone-200 bg-white p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900">

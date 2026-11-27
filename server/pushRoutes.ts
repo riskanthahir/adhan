@@ -153,7 +153,9 @@ export function createPushRouter(): express.Router {
       service: 'my-adhan-web-push',
       colomboDate: colombo.dateISO,
       colomboTime: colombo.formattedTime,
-      vapidConfigured: Boolean(vapid.publicKey),
+      vapidConfigured: vapid.configured,
+      vapidStatus: vapid.status,
+      vapidError: vapid.errorMessage,
       vapidConfiguredViaEnv: vapid.configuredViaEnv,
       scheduler: getSchedulerStatus(),
       stats: getDatabaseStats(),
@@ -162,7 +164,22 @@ export function createPushRouter(): express.Router {
 
   router.get('/push/vapid-public-key', (_req: Request, res: Response) => {
     const vapid = getPublicVapidConfig();
+    if (!vapid.configured || !vapid.publicKey) {
+      res.status(503).json({
+        configured: false,
+        status: vapid.status,
+        publicKey: null,
+        subject: vapid.subject,
+        configuredViaEnv: false,
+        error: vapid.errorMessage,
+        setupInstructions: vapid.setupInstructions,
+      });
+      return;
+    }
+
     res.json({
+      configured: true,
+      status: vapid.status,
       publicKey: vapid.publicKey,
       subject: vapid.subject,
       configuredViaEnv: vapid.configuredViaEnv,
@@ -170,6 +187,17 @@ export function createPushRouter(): express.Router {
   });
 
   router.post('/push/subscribe', (req: Request, res: Response) => {
+    const vapid = getPublicVapidConfig();
+    if (!vapid.configured) {
+      res.status(503).json({
+        ok: false,
+        status: vapid.status,
+        error: vapid.errorMessage ?? 'VAPID keys are not configured on the backend server.',
+        setupInstructions: vapid.setupInstructions,
+      });
+      return;
+    }
+
     const body = req.body as Record<string, unknown>;
     const deviceId = body.deviceId;
     const deviceToken = extractDeviceToken(req);
@@ -348,6 +376,17 @@ export function createPushRouter(): express.Router {
   });
 
   router.post('/push/test', async (req: Request, res: Response) => {
+    const vapid = getPublicVapidConfig();
+    if (!vapid.configured) {
+      res.status(503).json({
+        ok: false,
+        status: vapid.status,
+        error: vapid.errorMessage ?? 'VAPID keys are not configured on the backend server.',
+        setupInstructions: vapid.setupInstructions,
+      });
+      return;
+    }
+
     const body = req.body as Record<string, unknown>;
     const deviceId = body.deviceId;
     const deviceToken = extractDeviceToken(req);
@@ -572,10 +611,13 @@ export function createPushRouter(): express.Router {
       stats: getDatabaseStats(),
       scheduler: getSchedulerStatus(),
       vapid: {
-        configured: Boolean(vapid.publicKey),
-        publicKeyPreview: vapid.publicKey.slice(0, 16) + '…',
+        configured: vapid.configured,
+        status: vapid.status,
+        publicKeyPreview: vapid.publicKey ? `${vapid.publicKey.slice(0, 16)}…` : null,
         configuredViaEnv: vapid.configuredViaEnv,
         subject: vapid.subject,
+        errorMessage: vapid.errorMessage,
+        setupInstructions: vapid.setupInstructions,
       },
       subscription: subscriptionSummary,
       recentDeliveries,

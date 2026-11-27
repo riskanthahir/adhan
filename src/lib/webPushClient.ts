@@ -85,9 +85,12 @@ export interface PushDiagnosticsResponse {
   };
   vapid: {
     configured: boolean;
-    publicKeyPreview: string;
+    status: string;
+    publicKeyPreview: string | null;
     configuredViaEnv: boolean;
-    subject: string;
+    subject: string | null;
+    errorMessage: string | null;
+    setupInstructions: string[];
   };
   subscription: BackendSubscriptionSummary | null;
   recentDeliveries: BackendDeliveryAttempt[];
@@ -362,12 +365,17 @@ export async function enableBackgroundPushNotifications(params: {
   let vapidPublicKey = '';
   try {
     const keyRes = await fetch('/api/push/vapid-public-key');
-    if (!keyRes.ok) {
-      throw new Error(`HTTP ${keyRes.status} from /api/push/vapid-public-key`);
-    }
-    const keyJson = (await keyRes.json()) as { publicKey?: string };
-    if (!keyJson.publicKey) {
-      throw new Error('Server returned empty VAPID public key.');
+    const keyJson = (await keyRes.json().catch(() => ({}))) as {
+      configured?: boolean;
+      publicKey?: string | null;
+      error?: string;
+      setupInstructions?: string[];
+    };
+    if (!keyRes.ok || !keyJson.publicKey) {
+      const hint =
+        keyJson.error ||
+        `HTTP ${keyRes.status} from /api/push/vapid-public-key — VAPID keys must be configured on the backend.`;
+      throw new Error(hint);
     }
     vapidPublicKey = keyJson.publicKey;
     steps.push({

@@ -47,15 +47,19 @@ VAPID_PRIVATE_KEY=
 CRON_SECRET=
 ```
 
-### Generating Static VAPID Keys (Recommended for Production)
+### Generating Static VAPID Keys (One-Time Setup)
+
+Run the one-time generator script (uses `web-push`, verifies the EC P-256 public/private key match, and refuses to overwrite keys if they already exist):
 
 ```bash
-npx web-push generate-vapid-keys
+npm run vapid:generate
 ```
 
-Set `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` in your hosting environment.
-- **Security**: `VAPID_PRIVATE_KEY` is only loaded inside `server/vapid.ts` and is never returned by any API endpoint or bundled into `dist/`.
-- If `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` are left blank, the server generates an EC P-256 VAPID pair automatically on first boot and persists it in `app_config`.
+Or generate manually via `npx web-push generate-vapid-keys` and set them in `.env` or your hosting environment:
+- `VAPID_PUBLIC_KEY`: Exposed to the frontend solely via `GET /api/push/vapid-public-key`.
+- `VAPID_PRIVATE_KEY`: Backend-only secret; validated cryptographically against `VAPID_PUBLIC_KEY` (`prime256v1` P-256 key match check) on load and **never** bundled into `dist/`, logged, returned by any API endpoint, or committed to GitHub (`.env*` is gitignored).
+- `VAPID_SUBJECT`: Contact `mailto:...` or `https://...` URL required by APNs/FCM.
+- If keys are missing or mismatched, the backend **never** silently generates temporary keys—instead `/api/push/vapid-public-key` returns HTTP `503` and the app shows setup instructions.
 
 ---
 

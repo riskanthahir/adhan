@@ -1,5 +1,6 @@
 import express from 'express';
 import http from 'node:http';
+import { generateVAPIDKeys } from 'web-push';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   getAppliedMigrations,
@@ -20,6 +21,7 @@ import {
   ensureVapidConfigured,
   getPublicVapidConfig,
   resetVapidCacheForTesting,
+  validateVapidKeyPair,
 } from '../vapid.ts';
 import { resolveEmbeddedDaySchedule } from '../../src/shared/acju2026Timetable.ts';
 import { colomboDateTimeToEpochMs } from '../../src/shared/timetablePolicy.ts';
@@ -42,11 +44,15 @@ async function startTestAppServer() {
   };
 }
 
-describe('My Adhan Web Push Backend, Scheduler & ACJU Integration', () => {
+describe('My Adhan Web Push Backend, VAPID Validation, Scheduler & ACJU Integration', () => {
+  let testKeys: { publicKey: string; privateKey: string };
+
   beforeEach(() => {
     process.env.DATABASE_PATH = ':memory:';
-    delete process.env.VAPID_PUBLIC_KEY;
-    delete process.env.VAPID_PRIVATE_KEY;
+    testKeys = generateVAPIDKeys();
+    process.env.VAPID_PUBLIC_KEY = testKeys.publicKey;
+    process.env.VAPID_PRIVATE_KEY = testKeys.privateKey;
+    process.env.VAPID_SUBJECT = 'mailto:notifications@myadhan.lk';
     delete process.env.CRON_SECRET;
     resetDatabaseForTesting();
     resetVapidCacheForTesting();
@@ -59,23 +65,69 @@ describe('My Adhan Web Push Backend, Scheduler & ACJU Integration', () => {
     resetVapidCacheForTesting();
   });
 
-  it('applies SQLite migration 001 cleanly and generates/persists VAPID keys without exposing private key', () => {
+  it('requires backend env VAPID keys, validates public/private key-pair match, never exposes private key, and returns setup instructions when missing', async () => {
     const migrations = getAppliedMigrations();
     expect(migrations.map((m) => m.version)).toContain('001_initial_push_schema.sql');
 
-    const config1 = ensureVapidConfigured();
-    expect(config1.publicKey.length).toBeGreaterThan(30);
-    expect(config1.configuredViaEnv).toBe(false);
+    // Valid matched pair succeeds without leaking private key
+    const validCfg = ensureVapidConfigured();
+    expect(validCfg.configured).toBe(true);
+    expect(validCfg.status).toBe('configured');
+    expect(validCfg.publicKey).toBe(testKeys.publicKey);
+    expect((validCfg as unknown as Record<string, unknown>).privateKey).toBeUndefined();
 
-    // Public view omits private key completely
+    // Public API view omits private key
     const pub = getPublicVapidConfig() as unknown as Record<string, unknown>;
-    expect(pub.publicKey).toBe(config1.publicKey);
+    expect(pub.publicKey).toBe(testKeys.publicKey);
     expect(pub.privateKey).toBeUndefined();
 
-    // Resetting in-memory cache reloads identical persisted VAPID public key from SQLite
+    // Mismatched public/private keys fail cryptographic EC P-256 check
+    const otherPair = generateVAPIDKeys();
+    const mismatch = validateVapidKeyPair(
+      testKeys.publicKey,
+      otherPair.privateKey,
+      'mailto:notifications@myadhan.lk'
+    );
+    expect(mismatch.valid).toBe(false);
+    expect(mismatch.status).toBe('mismatched_keys');
+
+    // Invalid subject rejected cleanly
+    const badSubject = validateVapidKeyPair(
+      testKeys.publicKey,
+      testKeys.privateKey,
+      'not-a-valid-subject'
+    );
+    expect(badSubject.valid).toBe(false);
+    expect(badSubject.status).toBe('invalid_subject');
+
+    // Missing keys NEVER silently auto-generate; return clear setup instructions over HTTP 503
+    delete process.env.VAPID_PUBLIC_KEY;
+    delete process.env.VAPID_PRIVATE_KEY;
     resetVapidCacheForTesting();
-    const config2 = ensureVapidConfigured();
-    expect(config2.publicKey).toBe(config1.publicKey);
+
+    const missingCfg = ensureVapidConfigured();
+    expect(missingCfg.configured).toBe(false);
+    expect(missingCfg.status).toBe('missing_keys');
+    expect(missingCfg.publicKey).toBeNull();
+    expect(missingCfg.setupInstructions.length).toBeGreaterThan(0);
+
+    const srv = await startTestAppServer();
+    try {
+      const keyRes = await fetch(`${srv.baseUrl}/api/push/vapid-public-key`);
+      expect(keyRes.status).toBe(503);
+      const keyJson = (await keyRes.json()) as {
+        configured: boolean;
+        status: string;
+        publicKey: string | null;
+        setupInstructions: string[];
+      };
+      expect(keyJson.configured).toBe(false);
+      expect(keyJson.status).toBe('missing_keys');
+      expect(keyJson.publicKey).toBeNull();
+      expect(keyJson.setupInstructions.length).toBeGreaterThan(0);
+    } finally {
+      await srv.close();
+    }
   });
 
   it('persists subscriptions with SHA-256 device token auth and enforces endpoint/SSRF & ownership rules', async () => {
@@ -223,7 +275,6 @@ describe('My Adhan Web Push Backend, Scheduler & ACJU Integration', () => {
 
     expect(verifyDeviceOwnership(sub, 'token_scheduler_test_12345')).toBe(true);
 
-    // Check next prayer lookup works for future year (2027 annual repeat)
     const futureNext = getNextScheduledPrayerForSubscription(
       sub,
       new Date(colomboDateTimeToEpochMs('2027-06-15', '04:00'))
@@ -235,7 +286,6 @@ describe('My Adhan Web Push Backend, Scheduler & ACJU Integration', () => {
       .spyOn(pushTransport, 'sendNotification')
       .mockResolvedValue({ statusCode: 201, headers: {}, body: '' });
 
-    // Trigger at Dhuhr - 10 min + 20s
     const dhuhrMinus10Ms = colomboDateTimeToEpochMs('2026-06-15', dhuhrTime) - 10 * 60_000 + 20_000;
     const firstTick = await runSchedulerTick(new Date(dhuhrMinus10Ms));
     expect(firstTick.sent).toBe(1);
@@ -252,16 +302,15 @@ describe('My Adhan Web Push Backend, Scheduler & ACJU Integration', () => {
     expect(parsedPayload.advanceMinutes).toBe(10);
     expect(parsedPayload.title).toContain('Dhuhr in 10 min');
 
-    // Verify delivery persisted with exact unique eventKey
     const storedDelivery = getDeliveryByEventKey(parsedPayload.eventKey);
     expect(storedDelivery?.status).toBe('sent');
 
-    // Second tick 15 seconds later MUST deduplicate and send 0 notifications
+    // Second tick 15 seconds later MUST deduplicate
     const duplicateTick = await runSchedulerTick(new Date(dhuhrMinus10Ms + 15_000));
     expect(duplicateTick.attempted).toBe(0);
     expect(sendSpy).toHaveBeenCalledTimes(1);
 
-    // Disabled Asr prayer MUST NOT fire at Asr time
+    // Disabled Asr prayer MUST NOT fire
     const asrMs = colomboDateTimeToEpochMs('2026-06-15', asrTime) + 15_000;
     const asrTick = await runSchedulerTick(new Date(asrMs));
     expect(asrTick.attempted).toBe(0);
@@ -298,14 +347,12 @@ describe('My Adhan Web Push Backend, Scheduler & ACJU Integration', () => {
     expect(getSubscriptionByDeviceId('device_transient_err')?.status).toBe('active');
     expect(getSubscriptionByDeviceId('device_transient_err')?.failureCount).toBe(1);
 
-    // At Isha time, APNs returns 410 Gone -> subscription must automatically mark as 'expired'
     const ishaMs = colomboDateTimeToEpochMs('2026-06-15', ishaTime) + 10_000;
     const goneTick = await runSchedulerTick(new Date(ishaMs));
     expect(goneTick.expired).toBe(1);
     expect(sendSpy).toHaveBeenCalledTimes(2);
     expect(getSubscriptionByDeviceId('device_transient_err')?.status).toBe('expired');
 
-    // Subsequent tick ignores expired subscription
     const afterExpiredTick = await runSchedulerTick(new Date(ishaMs + 45_000));
     expect(afterExpiredTick.checkedSubscriptions).toBe(0);
   });

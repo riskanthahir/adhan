@@ -31,6 +31,7 @@ const MAX_TRANSIENT_ATTEMPTS = 3;
 
 let intervalId: NodeJS.Timeout | null = null;
 let tickInFlight = false;
+let loggedMissingVapidWarning = false;
 let lastTickAt: string | null = null;
 let lastTickSummary: {
   checkedSubscriptions: number;
@@ -72,7 +73,15 @@ export async function sendEncryptedWebPush(params: {
   payload: WebPushPayload;
   ttlSeconds?: number;
 }): Promise<{ ok: boolean; statusCode: number | null; error: string | null; expired: boolean }> {
-  ensureVapidConfigured();
+  const vapid = ensureVapidConfigured();
+  if (!vapid.configured) {
+    return {
+      ok: false,
+      statusCode: null,
+      error: vapid.errorMessage ?? 'VAPID keys are not configured in backend environment variables.',
+      expired: false,
+    };
+  }
 
   const target = {
     endpoint: params.subscription.endpoint,
@@ -162,7 +171,25 @@ export async function runSchedulerTick(now = new Date()): Promise<{
   };
 
   try {
-    ensureVapidConfigured();
+    const vapid = ensureVapidConfigured();
+    if (!vapid.configured) {
+      if (!loggedMissingVapidWarning) {
+        loggedMissingVapidWarning = true;
+        appendServerLog({
+          level: 'warn',
+          category: 'vapid_config',
+          message:
+            vapid.errorMessage ??
+            'VAPID keys are not configured; background push delivery is paused until configured.',
+          meta: { status: vapid.status },
+        });
+      }
+      lastTickAt = new Date().toISOString();
+      lastTickSummary = stats;
+      return stats;
+    }
+    loggedMissingVapidWarning = false;
+
     const activeSubs = listActiveSubscriptions();
     stats.checkedSubscriptions = activeSubs.length;
 

@@ -82,9 +82,33 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [audioMessage, setAudioMessage] = useState<string | null>(null);
   const [showIosDetails, setShowIosDetails] = useState(false);
+  const [vapidSetupBanner, setVapidSetupBanner] = useState<{
+    error: string;
+    instructions: string[];
+  } | null>(null);
 
   useEffect(() => {
     void listLocalAudioTracks().then(setLocalTracks);
+    void fetch('/api/push/vapid-public-key')
+      .then(async (res) => {
+        if (res.ok) {
+          setVapidSetupBanner(null);
+          return;
+        }
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          setupInstructions?: string[];
+        };
+        setVapidSetupBanner({
+          error:
+            data.error ||
+            'VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_SUBJECT must be configured on the server.',
+          instructions: Array.isArray(data.setupInstructions) ? data.setupInstructions : [],
+        });
+      })
+      .catch(() => {
+        // Ignore network errors during background check
+      });
   }, []);
 
   const allTracks = [...serverTracks, ...localTracks];
@@ -549,6 +573,20 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
               </motion.p>
             )}
           </AnimatePresence>
+
+          {vapidSetupBanner && (
+            <div className="rounded-2xl border border-amber-300 bg-amber-50 p-3.5 text-xs text-amber-950 dark:border-amber-700/70 dark:bg-amber-950/40 dark:text-amber-100">
+              <p className="font-semibold">VAPID Key Setup Required</p>
+              <p className="mt-1">{vapidSetupBanner.error}</p>
+              {vapidSetupBanner.instructions.length > 0 && (
+                <ol className="mt-2 list-decimal space-y-1 pl-4 text-[11px] text-amber-900 dark:text-amber-200">
+                  {vapidSetupBanner.instructions.map((step, i) => (
+                    <li key={i}>{step.replace(/^\d+\.\s*/, '')}</li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          )}
 
           {/* Subscription Telemetry Box */}
           <dl className="space-y-1.5 rounded-2xl border border-stone-200 bg-stone-50/80 p-3 text-xs dark:border-slate-800 dark:bg-slate-950/60">

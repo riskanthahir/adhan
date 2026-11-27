@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -18,6 +19,7 @@ async function bootstrapServer(): Promise<void> {
 
   const app = express();
   app.set('trust proxy', 1);
+  const httpServer = http.createServer(app);
 
   // Security headers compatible with PWA & HTTPS
   app.use((_req, res, next) => {
@@ -29,11 +31,15 @@ async function bootstrapServer(): Promise<void> {
   app.use('/api', createPushRouter());
 
   if (!IS_PRODUCTION) {
+    if (!process.env.DISABLE_HMR) {
+      process.env.DISABLE_HMR = 'true';
+    }
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: process.env.DISABLE_HMR !== 'true',
+        hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
+        ws: { server: httpServer },
       },
       appType: 'spa',
     });
@@ -65,13 +71,20 @@ async function bootstrapServer(): Promise<void> {
   startScheduler();
 
   appendServerLog({
-    level: 'info',
+    level: vapid.configured ? 'info' : 'warn',
     category: 'server_boot',
-    message: `My Adhan server started (${IS_PRODUCTION ? 'production' : 'development'}) with Web Push scheduler.`,
-    meta: { port: PORT, vapidViaEnv: vapid.configuredViaEnv },
+    message: vapid.configured
+      ? `My Adhan server started (${IS_PRODUCTION ? 'production' : 'development'}) with Web Push scheduler.`
+      : `My Adhan server started (${IS_PRODUCTION ? 'production' : 'development'}) — VAPID not configured (${vapid.status}).`,
+    meta: { port: PORT, vapidConfigured: vapid.configured, vapidStatus: vapid.status },
   });
 
-  const server = app.listen(PORT, '0.0.0.0', () => {
+  if (!vapid.configured) {
+    console.warn(`[My Adhan] VAPID configuration incomplete (${vapid.status}): ${vapid.errorMessage}`);
+    console.warn('[My Adhan] Run `npm run vapid:generate` or set VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT.');
+  }
+
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(
       `[My Adhan] Server listening on http://0.0.0.0:${PORT} (${IS_PRODUCTION ? 'production' : 'development'})`
     );
@@ -79,7 +92,7 @@ async function bootstrapServer(): Promise<void> {
 
   const shutdown = () => {
     stopScheduler();
-    server.close(() => process.exit(0));
+    httpServer.close(() => process.exit(0));
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

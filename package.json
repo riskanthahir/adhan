@@ -10,7 +10,8 @@
     "preview": "NODE_ENV=production node server.ts",
     "test": "vitest run",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "vapid:generate": "node scripts/generate-vapid-keys.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
