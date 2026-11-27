@@ -447,13 +447,13 @@ export const HomeView: React.FC<HomeViewProps> = ({
                         <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
                           {testAlarm
                             ? testAlarm.fired
-                              ? `Triggered at ${formatTime12h(testAlarm.timeHHMM)} — check notification & Adhan`
+                              ? `Triggered at ${formatTime12h(testAlarm.timeHHMM)} — check alert banner & Adhan audio`
                               : `Armed for ${formatTime12h(testAlarm.timeHHMM)} · in ${formatCountdownSeconds(
                                   Math.max(
                                     0,
                                     Math.floor((testAlarm.triggerAtEpochMs - now.getTime()) / 1000)
                                   )
-                                )}`
+                                )} (keep app open for Adhan audio)`
                             : `Colombo now ${colombo.formattedTime.slice(0, 5)} · Set manual time to test alert & Adhan`}
                         </p>
                       </div>

@@ -132,10 +132,28 @@ function probeAudioDuration(file: File): Promise<number> {
 let sharedAudioEl: HTMLAudioElement | null = null;
 let activeObjectUrl: string | null = null;
 let sharedAudioCtx: AudioContext | null = null;
+let activeBufferSource: AudioBufferSourceNode | null = null;
+let activeGainNode: GainNode | null = null;
 let chimeTimeoutId: number | null = null;
 let isAudioPlaying = false;
 let sessionUnlocked = false;
 let activeOnEnded: (() => void) | undefined;
+const decodedBufferCache = new Map<string, AudioBuffer>();
+const pendingDecodeMap = new Map<string, Promise<AudioBuffer | null>>();
+
+function setIOSAudioSessionPlayback(): void {
+  if (typeof navigator === 'undefined') return;
+  try {
+    const navWithSession = navigator as Navigator & {
+      audioSession?: { type: string };
+    };
+    if (navWithSession.audioSession && navWithSession.audioSession.type !== 'playback') {
+      navWithSession.audioSession.type = 'playback';
+    }
+  } catch {
+    // Ignore unsupported audioSession API
+  }
+}
 
 function getOrCreateAudioElement(): HTMLAudioElement {
   if (!sharedAudioEl) {
@@ -157,22 +175,75 @@ function getOrCreateAudioContext(): AudioContext | null {
   return sharedAudioCtx;
 }
 
+async function decodeTrackToBuffer(track: AdhanAudioTrack): Promise<AudioBuffer | null> {
+  if (track.storagePath.startsWith('builtin://')) return null;
+  const cached = decodedBufferCache.get(track.id);
+  if (cached) return cached;
+
+  const existing = pendingDecodeMap.get(track.id);
+  if (existing) return existing;
+
+  const task = (async (): Promise<AudioBuffer | null> => {
+    try {
+      const ctx = getOrCreateAudioContext();
+      if (!ctx) return null;
+
+      let arrayBuffer: ArrayBuffer;
+      if (track.storagePath.startsWith('indexeddb://')) {
+        const id = track.storagePath.replace('indexeddb://', '');
+        const blob = await getLocalAudioBlob(id);
+        if (!blob) return null;
+        arrayBuffer = await blob.arrayBuffer();
+      } else {
+        const res = await fetch(track.storagePath);
+        if (!res.ok) return null;
+        arrayBuffer = await res.arrayBuffer();
+      }
+
+      // Copy buffer for WebKit compatibility
+      const decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
+      decodedBufferCache.set(track.id, decoded);
+      return decoded;
+    } catch {
+      return null;
+    } finally {
+      pendingDecodeMap.delete(track.id);
+    }
+  })();
+
+  pendingDecodeMap.set(track.id, task);
+  return task;
+}
+
+export function preloadAdhanTrack(track: AdhanAudioTrack): void {
+  if (typeof window === 'undefined') return;
+  void decodeTrackToBuffer(track);
+}
+
 /**
  * Unlocks Web Audio and HTMLAudioElement synchronously inside a user gesture so
  * scheduled prayer-time Adhan playback works on iOS Safari / Home Screen PWAs
  * without blocking or hanging other permission prompts.
  */
-export async function unlockAudioForSession(): Promise<boolean> {
+export async function unlockAudioForSession(trackToPreload?: AdhanAudioTrack): Promise<boolean> {
   if (typeof window === 'undefined') return false;
-  if (sessionUnlocked) return true;
+  setIOSAudioSessionPlayback();
 
-  let unlocked = false;
+  if (trackToPreload) {
+    preloadAdhanTrack(trackToPreload);
+  }
+
+  const ctx = getOrCreateAudioContext();
+  if (sessionUnlocked && ctx && ctx.state === 'running') {
+    return true;
+  }
+
+  let unlocked = sessionUnlocked;
   const tasks: Promise<void>[] = [];
 
   try {
-    const ctx = getOrCreateAudioContext();
     if (ctx) {
-      if (ctx.state === 'suspended') {
+      if (ctx.state !== 'running') {
         tasks.push(
           ctx
             .resume()
@@ -198,7 +269,7 @@ export async function unlockAudioForSession(): Promise<boolean> {
   }
 
   try {
-    if (!isAudioPlaying) {
+    if (!isAudioPlaying && !sessionUnlocked) {
       const el = getOrCreateAudioElement();
       el.muted = true;
       el.setAttribute('playsinline', '');
@@ -210,7 +281,6 @@ export async function unlockAudioForSession(): Promise<boolean> {
             .then(() => {
               if (!isAudioPlaying) {
                 el.pause();
-                el.currentTime = 0;
               }
               el.muted = false;
               unlocked = true;
@@ -264,10 +334,34 @@ export function stopAdhanPlayback(): void {
     window.clearTimeout(chimeTimeoutId);
     chimeTimeoutId = null;
   }
+  if (activeBufferSource) {
+    try {
+      activeBufferSource.onended = null;
+      activeBufferSource.stop();
+      activeBufferSource.disconnect();
+    } catch {
+      // Ignore already stopped source
+    }
+    activeBufferSource = null;
+  }
+  if (activeGainNode) {
+    try {
+      activeGainNode.disconnect();
+    } catch {
+      // Ignore
+    }
+    activeGainNode = null;
+  }
   if (sharedAudioEl) {
-    sharedAudioEl.pause();
-    sharedAudioEl.currentTime = 0;
-    sharedAudioEl.onended = null;
+    try {
+      sharedAudioEl.pause();
+      if (sharedAudioEl.readyState > 0) {
+        sharedAudioEl.currentTime = 0;
+      }
+      sharedAudioEl.onended = null;
+    } catch {
+      // Ignore HTMLAudioElement state errors
+    }
   }
   if (activeObjectUrl) {
     URL.revokeObjectURL(activeObjectUrl);
@@ -281,11 +375,12 @@ export function stopAdhanPlayback(): void {
  */
 export async function playSynthesizedChime(volume: number, shortOnly: boolean): Promise<void> {
   stopAdhanPlayback();
+  setIOSAudioSessionPlayback();
   const ctx = getOrCreateAudioContext();
   if (!ctx) {
     throw new Error('Web Audio API is not supported in this browser.');
   }
-  if (ctx.state === 'suspended') {
+  if (ctx.state !== 'running') {
     await ctx.resume();
   }
 
@@ -311,6 +406,74 @@ export async function playSynthesizedChime(volume: number, shortOnly: boolean): 
   });
 }
 
+async function playViaAudioBuffer(
+  track: AdhanAudioTrack,
+  volume: number
+): Promise<boolean> {
+  try {
+    setIOSAudioSessionPlayback();
+    const ctx = getOrCreateAudioContext();
+    if (!ctx) return false;
+    if (ctx.state !== 'running') {
+      await ctx.resume();
+    }
+    const buffer = await decodeTrackToBuffer(track);
+    if (!buffer) return false;
+
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(Math.max(0, Math.min(1, volume)), ctx.currentTime);
+    source.connect(gain);
+    gain.connect(ctx.destination);
+
+    activeBufferSource = source;
+    activeGainNode = gain;
+    isAudioPlaying = true;
+
+    source.onended = () => {
+      if (activeBufferSource !== source) return;
+      const cb = activeOnEnded;
+      stopAdhanPlayback();
+      cb?.();
+    };
+
+    source.start(0);
+    sessionUnlocked = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function registerMediaSession(track: AdhanAudioTrack, mediaTitle?: string, mediaArtist?: string): void {
+  if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: mediaTitle ?? track.title,
+      artist: mediaArtist ?? 'My Adhan · ACJU Sri Lanka',
+      artwork: [
+        { src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' },
+        { src: '/pwa-512x512.png', sizes: '512x512', type: 'image/png' },
+      ],
+    });
+    navigator.mediaSession.playbackState = 'playing';
+    navigator.mediaSession.setActionHandler('pause', () => {
+      const cb = activeOnEnded;
+      stopAdhanPlayback();
+      cb?.();
+    });
+    navigator.mediaSession.setActionHandler('stop', () => {
+      const cb = activeOnEnded;
+      stopAdhanPlayback();
+      cb?.();
+    });
+  } catch {
+    // Ignore Media Session errors on unsupported browsers
+  }
+}
+
 export async function playAdhanTrack(params: {
   track: AdhanAudioTrack;
   volume: number;
@@ -321,6 +484,7 @@ export async function playAdhanTrack(params: {
 }): Promise<void> {
   const { track, volume, playbackMode, mediaTitle, mediaArtist, onEnded } = params;
   stopAdhanPlayback();
+  setIOSAudioSessionPlayback();
   activeOnEnded = onEnded;
 
   if (playbackMode === 'short_chime' || track.storagePath.startsWith('builtin://')) {
@@ -350,7 +514,7 @@ export async function playAdhanTrack(params: {
   audio.muted = false;
   audio.volume = Math.max(0, Math.min(1, volume));
   audio.src = srcUrl;
-  audio.currentTime = 0;
+  audio.load();
 
   audio.onended = () => {
     const cb = activeOnEnded;
@@ -358,40 +522,38 @@ export async function playAdhanTrack(params: {
     cb?.();
   };
 
-  if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
-    try {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: mediaTitle ?? track.title,
-        artist: mediaArtist ?? 'My Adhan · ACJU Sri Lanka',
-        artwork: [
-          { src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' },
-          { src: '/pwa-512x512.png', sizes: '512x512', type: 'image/png' },
-        ],
-      });
-      navigator.mediaSession.playbackState = 'playing';
-      navigator.mediaSession.setActionHandler('pause', () => {
-        const cb = activeOnEnded;
-        stopAdhanPlayback();
-        cb?.();
-      });
-      navigator.mediaSession.setActionHandler('stop', () => {
-        const cb = activeOnEnded;
-        stopAdhanPlayback();
-        cb?.();
-      });
-    } catch {
-      // Ignore Media Session errors on unsupported browsers
-    }
-  }
+  registerMediaSession(track, mediaTitle, mediaArtist);
 
   isAudioPlaying = true;
   try {
     await audio.play();
     sessionUnlocked = true;
-  } catch (err) {
-    isAudioPlaying = false;
-    activeOnEnded = undefined;
-    clearMediaSession();
-    throw err;
+    return;
+  } catch (htmlErr) {
+    // On iOS Safari / Standalone PWA, swapping HTMLAudioElement.src inside a timer can be rejected;
+    // try playing the decoded Adhan AudioBuffer through the unlocked Web Audio API AudioContext.
+    audio.onended = null;
+    const bufferPlayed = await playViaAudioBuffer(track, volume);
+    if (bufferPlayed) {
+      return;
+    }
+
+    // Last resort: play synthesized chime through AudioContext if audio buffer failed
+    try {
+      await playSynthesizedChime(volume, false);
+      activeOnEnded = onEnded;
+      chimeTimeoutId = window.setTimeout(() => {
+        isAudioPlaying = false;
+        const cb = activeOnEnded;
+        activeOnEnded = undefined;
+        cb?.();
+      }, 3200);
+      return;
+    } catch {
+      isAudioPlaying = false;
+      activeOnEnded = undefined;
+      clearMediaSession();
+      throw htmlErr;
+    }
   }
 }

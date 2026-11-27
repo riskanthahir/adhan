@@ -26,6 +26,7 @@ import {
   isAudioSessionUnlocked,
   listLocalAudioTracks,
   playAdhanTrack,
+  preloadAdhanTrack,
   stopAdhanPlayback,
   unlockAudioForSession,
 } from './lib/audioEngine';
@@ -273,10 +274,24 @@ export default function App() {
     };
   }, [permissionsModalOpen]);
 
-  // Unlock browser audio on the first user gesture so prayer-time Adhan can play automatically
+  const selectedBuiltinTrack = useMemo(
+    () =>
+      BUILTIN_AUDIO_TRACKS.find((t) => t.id === preferences.selectedAudioId) ??
+      BUILTIN_AUDIO_TRACKS[0],
+    [preferences.selectedAudioId]
+  );
+
+  // Preload & decode built-in Adhan track cleanly for iOS Web Audio fallback
+  useEffect(() => {
+    if (selectedBuiltinTrack) {
+      preloadAdhanTrack(selectedBuiltinTrack);
+    }
+  }, [selectedBuiltinTrack]);
+
+  // Unlock browser audio on every user gesture while suspended so prayer-time Adhan can play automatically
   useEffect(() => {
     const handleFirstGesture = () => {
-      void unlockAudioForSession().then((ok) => {
+      void unlockAudioForSession(selectedBuiltinTrack).then((ok) => {
         if (ok) setAudioUnlocked(true);
       });
     };
@@ -286,7 +301,7 @@ export default function App() {
       window.removeEventListener('pointerdown', handleFirstGesture);
       window.removeEventListener('keydown', handleFirstGesture);
     };
-  }, []);
+  }, [selectedBuiltinTrack]);
 
   // Sync theme to documentElement
   useEffect(() => {
@@ -607,12 +622,12 @@ export default function App() {
   );
 
   const handlePreviewSelectedAudio = useCallback(async () => {
-    await unlockAudioForSession();
+    await unlockAudioForSession(selectedBuiltinTrack);
     const ok = await playSelectedAdhan('My Adhan — Audio Test');
     if (!ok) {
       setActiveTab('audio');
     }
-  }, [playSelectedAdhan]);
+  }, [playSelectedAdhan, selectedBuiltinTrack]);
 
   const handlePrayerTrigger = useCallback(
     async (
@@ -649,6 +664,34 @@ export default function App() {
     [playSelectedAdhan]
   );
 
+  // Keep iPhone / mobile screen awake while a live Sample Adhan test alarm is counting down
+  useEffect(() => {
+    if (!testAlarm || testAlarm.fired) return;
+    if (typeof navigator === 'undefined' || !('wakeLock' in navigator)) return;
+
+    let cancelled = false;
+    let sentinel: WakeLockSentinel | null = null;
+
+    const acquire = async () => {
+      if (cancelled || document.visibilityState !== 'visible') return;
+      try {
+        sentinel = await navigator.wakeLock.request('screen');
+      } catch {
+        // Ignore unsupported or low-power-mode wakeLock denial
+      }
+    };
+
+    void acquire();
+    document.addEventListener('visibilitychange', acquire);
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', acquire);
+      if (sentinel) {
+        void sentinel.release().catch(() => {});
+      }
+    };
+  }, [testAlarm]);
+
   const handleArmTestAlarm = useCallback(
     async (timeHHMM: string) => {
       if (!/^\d{2}:\d{2}$/.test(timeHHMM)) return;
@@ -657,7 +700,7 @@ export default function App() {
         typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default'
           ? reminderAdapterRef.current.requestPermission()
           : null;
-      const unlockPromise = unlockAudioForSession().then((ok) => {
+      const unlockPromise = unlockAudioForSession(selectedBuiltinTrack).then((ok) => {
         if (ok) setAudioUnlocked(true);
         return ok;
       });
@@ -690,7 +733,7 @@ export default function App() {
         },
       });
     },
-    [selectedZone.name, handlePrayerTrigger]
+    [selectedZone.name, handlePrayerTrigger, selectedBuiltinTrack]
   );
 
   const handleClearTestAlarm = useCallback(() => {
@@ -852,10 +895,10 @@ export default function App() {
   }, []);
 
   const handleOnboardingUnlockAudio = useCallback(async () => {
-    const ok = await unlockAudioForSession();
+    const ok = await unlockAudioForSession(selectedBuiltinTrack);
     if (ok) setAudioUnlocked(true);
     return ok;
-  }, []);
+  }, [selectedBuiltinTrack]);
 
   const navItems: ReadonlyArray<{ id: AppTab; label: string; icon: React.ReactNode }> = [
     { id: 'today', label: 'Today', icon: <Home className="h-5 w-5" /> },
@@ -911,7 +954,7 @@ export default function App() {
           </div>
         </header>
 
-        {/* Live Prayer Time / Adhan Alert Banner */}
+        {/* Live Prayer Time / Adhan Alert Banner (sticky so always visible on mobile) */}
         <AnimatePresence>
           {activeAdhanAlert && (
             <motion.div
@@ -919,7 +962,7 @@ export default function App() {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -12 }}
               role="alert"
-              className="mx-auto mt-3 max-w-6xl px-3.5 sm:px-6"
+              className="sticky top-[56px] sm:top-[68px] z-30 mx-auto mt-3 max-w-6xl px-3.5 sm:px-6"
             >
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-700/50 bg-emerald-900 px-4 py-3 text-white shadow-lg">
                 <div className="flex items-center gap-2.5 min-w-0">
