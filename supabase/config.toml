@@ -1,0 +1,25 @@
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 15
+
+[functions.register-device]
+verify_jwt = false
+
+[functions.update-preferences]
+verify_jwt = false
+
+[functions.send-test-push]
+verify_jwt = false
+
+[functions.dispatch-prayer-push]
+verify_jwt = false
+
+[functions.cleanup-subscriptions]
+verify_jwt = false

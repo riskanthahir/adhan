@@ -17,6 +17,7 @@ import {
   enableBackgroundPushNotifications,
   ensureServiceWorkerReady,
   fetchPushDiagnostics,
+  getBackendTransportMode,
   inspectPushEnvironment,
   pingServiceWorker,
   sendBackendTestPushNotification,
@@ -167,25 +168,22 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
     setDiag(backendDiag);
 
     if (backendDiag) {
+      const isSupabaseMode =
+        backendDiag.backendMode === 'supabase' || getBackendTransportMode() === 'supabase';
       list.push({
         id: 'vapid',
-        label: 'VAPID Environment Configuration & Key-Pair Match',
+        label: 'VAPID Configuration & EC P-256 Key Match',
         status: backendDiag.vapid.configured ? 'pass' : 'fail',
         detail: backendDiag.vapid.configured
-          ? `${backendDiag.vapid.publicKeyPreview} (Environment Variables · Validated Match · ${backendDiag.vapid.subject ?? ''})`
+          ? `${backendDiag.vapid.publicKeyPreview} (${isSupabaseMode ? 'Supabase Secrets' : 'Environment Variables'} · Validated Match · ${backendDiag.vapid.subject ?? ''})`
           : backendDiag.vapid.errorMessage ||
             'VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_SUBJECT are not configured on the backend server.',
       });
 
       list.push({
         id: 'backend-storage',
-        label: 'Backend Subscription Storage',
-        status:
-          backendDiag.subscription?.status === 'active'
-            ? 'pass'
-            : backendDiag.subscription
-            ? 'warn'
-            : 'warn',
+        label: isSupabaseMode ? 'Supabase PostgreSQL Storage & RLS' : 'Backend Subscription Storage',
+        status: backendDiag.subscription?.status === 'active' ? 'pass' : 'warn',
         detail: backendDiag.subscription
           ? `Status: ${backendDiag.subscription.status} · Zone ${backendDiag.subscription.zoneId} (${backendDiag.subscription.districtId})`
           : 'Not stored on server yet for this device.',
@@ -193,7 +191,7 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
 
       list.push({
         id: 'scheduler',
-        label: 'Server Scheduler & ACJU Integration',
+        label: isSupabaseMode ? 'Supabase pg_cron & ACJU Integration' : 'Server Scheduler & ACJU Integration',
         status: backendDiag.scheduler.running ? 'pass' : 'fail',
         detail: `Colombo ${backendDiag.colomboDate} ${backendDiag.colomboTime.slice(0, 5)} · Tick every ${Math.round(
           backendDiag.scheduler.intervalMs / 1000
@@ -230,7 +228,10 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
         id: 'backend-offline',
         label: 'Backend Server Reachability',
         status: 'fail',
-        detail: 'Could not reach /api/push/diagnostics.',
+        detail:
+          getBackendTransportMode() === 'supabase'
+            ? 'Could not reach Supabase Edge Function register-device (?action=diagnostics).'
+            : 'Could not reach /api/push/diagnostics.',
       });
     }
 
@@ -277,7 +278,7 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
       });
       setActionFeedback(
         res.ok
-          ? 'Subscription created, saved to SQLite, and verified.'
+          ? 'Subscription created, persisted to backend storage, and verified.'
           : res.error || 'Subscription failed.'
       );
       onPushStatusUpdated();
@@ -504,8 +505,14 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
                 </dd>
               </div>
               <div className="flex justify-between gap-3">
-                <dt className="text-slate-500">SQLite Migrations</dt>
-                <dd className="font-mono-tabular text-slate-700 dark:text-slate-300">
+                <dt className="text-slate-500">Backend Engine</dt>
+                <dd className="text-right text-slate-700 dark:text-slate-300">
+                  {diag.databasePath}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-slate-500">Database Migrations</dt>
+                <dd className="font-mono-tabular text-right text-slate-700 dark:text-slate-300">
                   {diag.migrations.map((m) => m.version).join(', ') || 'None'}
                 </dd>
               </div>
@@ -574,10 +581,10 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
         </section>
       </div>
 
-      {/* Physical iPhone Verification Guide */}
+      {/* Physical iPhone 13-Point Verification Checklist */}
       <section className="rounded-3xl border border-stone-200 bg-stone-100/80 p-4 sm:p-5 text-xs text-slate-700 dark:border-slate-800 dark:bg-slate-900/70 dark:text-slate-300">
         <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-          Physical iPhone Verification Matrix (A–G)
+          Physical iPhone Verification Matrix (13-Point Checklist)
         </h2>
         <p className="mt-1 leading-relaxed">
           Apple Push Notification service (<code className="font-mono-tabular">web.push.apple.com</code>)
@@ -585,15 +592,21 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
           16.4+) over <strong>HTTPS</strong>. Sound played when locked uses the system notification
           chime (not custom MP3 Adhan audio, which Apple reserves for foreground app playback).
         </p>
-        <ul className="mt-2.5 grid gap-1.5 sm:grid-cols-2">
-          <li>A. Foreground open → Test Push shows banner + system notification</li>
-          <li>B. Backgrounded → Test Push arrives on Notification Center</li>
-          <li>C. App swiped closed → Background push still delivered via APNs</li>
-          <li>D. iPhone screen locked → Notification wakes Lock Screen</li>
-          <li>E. Offline briefly → Short 5-min TTL delivers if reconnected promptly</li>
-          <li>F. Reopened hours later → Preference sync &amp; renewal check run</li>
-          <li>G. Disabled then re-enabled → Unsubscribes old key &amp; verifies new endpoint</li>
-        </ul>
+        <ol className="mt-2.5 grid list-decimal gap-1.5 pl-4 sm:grid-cols-2">
+          <li>Installed PWA on physical iPhone (iOS 16.4+) over Vercel HTTPS</li>
+          <li>Service Worker registration &amp; ping active in standalone mode</li>
+          <li>Notification permission granted via user tap inside Home Screen app</li>
+          <li>Web Push subscription created &amp; persisted in Supabase</li>
+          <li>ACJU district prayer times verified for Asia/Colombo in prayer_times</li>
+          <li>Scheduled push received when PWA is open in foreground</li>
+          <li>Scheduled push received when PWA is in background</li>
+          <li>Scheduled push received when PWA is swiped/closed completely</li>
+          <li>Scheduled push wakes iPhone Lock Screen when screen is locked</li>
+          <li>Notification tap opens My Adhan cleanly &amp; verifies click</li>
+          <li>No duplicate notification delivery (unique idempotency_key)</li>
+          <li>Invalid/expired 410 Gone subscription flagged &amp; cleaned up</li>
+          <li>Disable &amp; Re-enable flow unsubscribes &amp; re-registers clean key</li>
+        </ol>
       </section>
     </div>
   );

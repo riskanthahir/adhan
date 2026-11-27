@@ -21,7 +21,11 @@ import {
   stopAdhanPlayback,
   unlockAudioForSession,
 } from '../lib/audioEngine';
-import type { BackendSubscriptionSummary } from '../lib/webPushClient';
+import {
+  fetchVapidPublicKeyStatus,
+  getBackendTransportMode,
+  type BackendSubscriptionSummary,
+} from '../lib/webPushClient';
 import { LockScreenSyncCard } from './LockScreenSyncCard';
 import type { AdapterCapabilities, ScheduledReminderSummary } from '../lib/reminders';
 import { PRAYER_LABELS, PRAYER_NAMES } from '../shared/types';
@@ -89,26 +93,18 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
 
   useEffect(() => {
     void listLocalAudioTracks().then(setLocalTracks);
-    void fetch('/api/push/vapid-public-key')
-      .then(async (res) => {
-        if (res.ok) {
-          setVapidSetupBanner(null);
-          return;
-        }
-        const data = (await res.json().catch(() => ({}))) as {
-          error?: string;
-          setupInstructions?: string[];
-        };
-        setVapidSetupBanner({
-          error:
-            data.error ||
-            'VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_SUBJECT must be configured on the server.',
-          instructions: Array.isArray(data.setupInstructions) ? data.setupInstructions : [],
-        });
-      })
-      .catch(() => {
-        // Ignore network errors during background check
+    void fetchVapidPublicKeyStatus().then((res) => {
+      if (res.ok) {
+        setVapidSetupBanner(null);
+        return;
+      }
+      setVapidSetupBanner({
+        error:
+          res.error ||
+          'VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_SUBJECT must be configured on the backend.',
+        instructions: res.setupInstructions ?? [],
       });
+    });
   }, []);
 
   const allTracks = [...serverTracks, ...localTracks];
@@ -508,7 +504,9 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
                 Background Push &amp; Prayer Reminders
               </h2>
               <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                Server-scheduled iOS Home Screen &amp; Web Push alerts (works when closed or locked)
+                {getBackendTransportMode() === 'supabase'
+                  ? 'Supabase Edge Push + pg_cron (works when closed or locked)'
+                  : 'Server-scheduled iOS Home Screen & Web Push alerts (works when closed or locked)'}
               </p>
             </div>
             <span

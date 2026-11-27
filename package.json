@@ -11,7 +11,9 @@
     "test": "vitest run",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "vapid:generate": "node scripts/generate-vapid-keys.mjs"
+    "vapid:generate": "node scripts/generate-vapid-keys.mjs",
+    "acju:export-json": "node scripts/export-acju-district-json.mjs",
+    "supabase:sync-prayers": "node scripts/import-acju-to-supabase.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

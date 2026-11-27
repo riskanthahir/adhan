@@ -231,16 +231,29 @@ self.addEventListener('notificationclick', (event: NotificationEvent) => {
         const deviceMeta = (await readSwMeta('device_registration')) as {
           deviceId?: string;
           deviceToken?: string;
+          supabaseUrl?: string | null;
+          supabaseAnonKey?: string | null;
         } | null;
         if (deviceMeta?.deviceId && deviceMeta?.deviceToken) {
-          await fetch('/api/push/verify-click', {
+          const isSupabase = Boolean(deviceMeta.supabaseUrl && deviceMeta.supabaseAnonKey);
+          const verifyUrl = isSupabase
+            ? `${deviceMeta.supabaseUrl}/functions/v1/register-device`
+            : '/api/push/verify-click';
+          const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+            'X-Device-Token': deviceMeta.deviceToken,
+          };
+          if (isSupabase && deviceMeta.supabaseAnonKey) {
+            headers.apikey = deviceMeta.supabaseAnonKey;
+            headers.Authorization = `Bearer ${deviceMeta.supabaseAnonKey}`;
+          }
+          await fetch(verifyUrl, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Device-Token': deviceMeta.deviceToken,
-            },
+            headers,
             body: JSON.stringify({
+              action: 'verify-click',
               deviceId: deviceMeta.deviceId,
+              deviceToken: deviceMeta.deviceToken,
               eventKey: notifData.eventKey ?? null,
             }),
           });
@@ -290,15 +303,29 @@ self.addEventListener('pushsubscriptionchange', (event) => {
           perPrayerEnabled?: Record<string, boolean>;
           advanceMinutes?: Record<string, number>;
           vapidPublicKey?: string;
+          supabaseUrl?: string | null;
+          supabaseAnonKey?: string | null;
         } | null;
 
         if (!deviceMeta?.deviceId || !deviceMeta?.deviceToken) return;
+        const isSupabase = Boolean(deviceMeta.supabaseUrl && deviceMeta.supabaseAnonKey);
+        const baseHeaders: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'X-Device-Token': deviceMeta.deviceToken,
+        };
+        if (isSupabase && deviceMeta.supabaseAnonKey) {
+          baseHeaders.apikey = deviceMeta.supabaseAnonKey;
+          baseHeaders.Authorization = `Bearer ${deviceMeta.supabaseAnonKey}`;
+        }
 
         let newSub = pushChangeEvent.newSubscription;
         if (!newSub) {
           let vapidPublicKey = deviceMeta.vapidPublicKey;
           if (!vapidPublicKey) {
-            const keyRes = await fetch('/api/push/vapid-public-key');
+            const keyUrl = isSupabase
+              ? `${deviceMeta.supabaseUrl}/functions/v1/register-device?action=vapid-public-key`
+              : '/api/push/vapid-public-key';
+            const keyRes = await fetch(keyUrl, { headers: baseHeaders });
             if (keyRes.ok) {
               const keyJson = (await keyRes.json()) as { publicKey?: string };
               vapidPublicKey = keyJson.publicKey;
@@ -313,12 +340,13 @@ self.addEventListener('pushsubscriptionchange', (event) => {
         }
 
         const subJson = newSub.toJSON();
-        await fetch('/api/push/subscribe', {
+        const subscribeUrl = isSupabase
+          ? `${deviceMeta.supabaseUrl}/functions/v1/register-device`
+          : '/api/push/subscribe';
+
+        await fetch(subscribeUrl, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Device-Token': deviceMeta.deviceToken,
-          },
+          headers: baseHeaders,
           body: JSON.stringify({
             deviceId: deviceMeta.deviceId,
             deviceToken: deviceMeta.deviceToken,

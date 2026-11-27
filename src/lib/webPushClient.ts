@@ -6,6 +6,67 @@ const SW_META_DB = 'my_adhan_sw_meta';
 const SW_META_STORE = 'kv';
 export const PUSH_CHANNEL_NAME = 'my-adhan-push';
 
+const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').trim().replace(/\/+$/, '');
+const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
+export const IS_SUPABASE_BACKEND = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+
+export function getBackendTransportMode(): 'supabase' | 'express' {
+  return IS_SUPABASE_BACKEND ? 'supabase' : 'express';
+}
+
+function buildBackendHeaders(deviceToken?: string, includeJson = true): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (includeJson) headers['Content-Type'] = 'application/json';
+  if (deviceToken) headers['X-Device-Token'] = deviceToken;
+  if (IS_SUPABASE_BACKEND) {
+    headers.apikey = SUPABASE_ANON_KEY;
+    headers.Authorization = `Bearer ${SUPABASE_ANON_KEY}`;
+  }
+  return headers;
+}
+
+function backendEndpoint(
+  route:
+    | 'vapid-public-key'
+    | 'subscribe'
+    | 'unsubscribe'
+    | 'preferences'
+    | 'status'
+    | 'test'
+    | 'verify-click'
+    | 'test-expired-cleanup'
+    | 'diagnostics',
+  deviceId?: string
+): string {
+  if (!IS_SUPABASE_BACKEND) {
+    const q = deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : '';
+    return `/api/push/${route}${q}`;
+  }
+
+  switch (route) {
+    case 'vapid-public-key':
+      return `${SUPABASE_URL}/functions/v1/register-device?action=vapid-public-key`;
+    case 'subscribe':
+    case 'unsubscribe':
+    case 'verify-click':
+      return `${SUPABASE_URL}/functions/v1/register-device`;
+    case 'status':
+      return `${SUPABASE_URL}/functions/v1/register-device?action=status&deviceId=${encodeURIComponent(
+        deviceId ?? ''
+      )}`;
+    case 'diagnostics':
+      return `${SUPABASE_URL}/functions/v1/register-device?action=diagnostics&deviceId=${encodeURIComponent(
+        deviceId ?? ''
+      )}`;
+    case 'preferences':
+      return `${SUPABASE_URL}/functions/v1/update-preferences`;
+    case 'test':
+      return `${SUPABASE_URL}/functions/v1/send-test-push`;
+    case 'test-expired-cleanup':
+      return `${SUPABASE_URL}/functions/v1/cleanup-subscriptions`;
+  }
+}
+
 export type PushSubscriptionStatusType =
   | 'active'
   | 'disabled'
@@ -58,6 +119,7 @@ export interface BackendSubscriptionSummary {
 
 export interface PushDiagnosticsResponse {
   ok: boolean;
+  backendMode?: 'supabase' | 'express';
   colomboDate: string;
   colomboTime: string;
   databasePath: string;
@@ -143,6 +205,36 @@ export function getOrCreateDeviceCredentials(): { deviceId: string; deviceToken:
     deviceToken = deviceToken || generateRandomHex(24);
   }
   return { deviceId, deviceToken };
+}
+
+async function readSwMeta(key: string): Promise<Record<string, unknown> | null> {
+  if (typeof indexedDB === 'undefined') return null;
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open(SW_META_DB, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(SW_META_STORE)) {
+          db.createObjectStore(SW_META_STORE);
+        }
+      };
+      req.onsuccess = () => {
+        try {
+          const db = req.result;
+          const tx = db.transaction(SW_META_STORE, 'readonly');
+          const getReq = tx.objectStore(SW_META_STORE).get(key);
+          getReq.onsuccess = () =>
+            resolve((getReq.result as Record<string, unknown> | undefined) ?? null);
+          getReq.onerror = () => resolve(null);
+        } catch {
+          resolve(null);
+        }
+      };
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
 }
 
 async function writeSwMeta(key: string, value: unknown): Promise<void> {
@@ -364,7 +456,9 @@ export async function enableBackgroundPushNotifications(params: {
 
   let vapidPublicKey = '';
   try {
-    const keyRes = await fetch('/api/push/vapid-public-key');
+    const keyRes = await fetch(backendEndpoint('vapid-public-key'), {
+      headers: buildBackendHeaders(undefined, false),
+    });
     const keyJson = (await keyRes.json().catch(() => ({}))) as {
       configured?: boolean;
       publicKey?: string | null;
@@ -374,7 +468,7 @@ export async function enableBackgroundPushNotifications(params: {
     if (!keyRes.ok || !keyJson.publicKey) {
       const hint =
         keyJson.error ||
-        `HTTP ${keyRes.status} from /api/push/vapid-public-key — VAPID keys must be configured on the backend.`;
+        `HTTP ${keyRes.status} from VAPID endpoint — VAPID keys must be configured on the backend.`;
       throw new Error(hint);
     }
     vapidPublicKey = keyJson.publicKey;
@@ -430,12 +524,9 @@ export async function enableBackgroundPushNotifications(params: {
   const subJson = browserSub.toJSON();
 
   try {
-    const saveRes = await fetch('/api/push/subscribe', {
+    const saveRes = await fetch(backendEndpoint('subscribe'), {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Device-Token': deviceToken,
-      },
+      headers: buildBackendHeaders(deviceToken),
       body: JSON.stringify({
         deviceId,
         deviceToken,
@@ -463,6 +554,8 @@ export async function enableBackgroundPushNotifications(params: {
       perPrayerEnabled: params.perPrayerEnabled,
       advanceMinutes: params.advanceMinutes,
       vapidPublicKey,
+      supabaseUrl: IS_SUPABASE_BACKEND ? SUPABASE_URL : null,
+      supabaseAnonKey: IS_SUPABASE_BACKEND ? SUPABASE_ANON_KEY : null,
     });
 
     steps.push({
@@ -515,13 +608,10 @@ export async function disableBackgroundPushNotifications(): Promise<{
     // Proceed to mark backend disabled even if browser unsubscribe fails
   }
 
-  const res = await fetch('/api/push/unsubscribe', {
+  const res = await fetch(backendEndpoint('unsubscribe'), {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Device-Token': deviceToken,
-    },
-    body: JSON.stringify({ deviceId, deviceToken }),
+    headers: buildBackendHeaders(deviceToken),
+    body: JSON.stringify({ action: 'unsubscribe', deviceId, deviceToken }),
   });
 
   const json = (await res.json()) as {
@@ -558,10 +648,8 @@ export async function fetchBackendPushStatus(): Promise<{
     browserHasSubscription = false;
   }
 
-  const res = await fetch(`/api/push/status?deviceId=${encodeURIComponent(deviceId)}`, {
-    headers: {
-      'X-Device-Token': deviceToken,
-    },
+  const res = await fetch(backendEndpoint('status', deviceId), {
+    headers: buildBackendHeaders(deviceToken, false),
   });
 
   if (!res.ok) {
@@ -600,12 +688,16 @@ export async function syncPushPreferencesToBackend(params: {
       const reg = await navigator.serviceWorker.getRegistration();
       const browserSub = await reg?.pushManager?.getSubscription();
       if (browserSub) {
+        const prevMeta = await readSwMeta('device_registration');
         await writeSwMeta('device_registration', {
+          ...(prevMeta ?? {}),
           deviceId,
           deviceToken,
           districtId: params.districtId,
           perPrayerEnabled: params.perPrayerEnabled,
           advanceMinutes: params.advanceMinutes,
+          supabaseUrl: IS_SUPABASE_BACKEND ? SUPABASE_URL : null,
+          supabaseAnonKey: IS_SUPABASE_BACKEND ? SUPABASE_ANON_KEY : null,
         });
       }
     }
@@ -613,12 +705,9 @@ export async function syncPushPreferencesToBackend(params: {
     // Ignore SW inspection failure during background sync
   }
 
-  const res = await fetch('/api/push/preferences', {
+  const res = await fetch(backendEndpoint('preferences'), {
     method: 'PATCH',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Device-Token': deviceToken,
-    },
+    headers: buildBackendHeaders(deviceToken),
     body: JSON.stringify({
       deviceId,
       deviceToken,
@@ -641,12 +730,9 @@ export async function sendBackendTestPushNotification(): Promise<{
   subscription?: BackendSubscriptionSummary | null;
 }> {
   const { deviceId, deviceToken } = getOrCreateDeviceCredentials();
-  const res = await fetch('/api/push/test', {
+  const res = await fetch(backendEndpoint('test'), {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Device-Token': deviceToken,
-    },
+    headers: buildBackendHeaders(deviceToken),
     body: JSON.stringify({ deviceId, deviceToken }),
   });
 
@@ -669,13 +755,10 @@ export async function sendBackendTestPushNotification(): Promise<{
 export async function verifyPushClickWithBackend(eventKey?: string | null): Promise<string | null> {
   const { deviceId, deviceToken } = getOrCreateDeviceCredentials();
   try {
-    const res = await fetch('/api/push/verify-click', {
+    const res = await fetch(backendEndpoint('verify-click'), {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Device-Token': deviceToken,
-      },
-      body: JSON.stringify({ deviceId, deviceToken, eventKey: eventKey ?? null }),
+      headers: buildBackendHeaders(deviceToken),
+      body: JSON.stringify({ action: 'verify-click', deviceId, deviceToken, eventKey: eventKey ?? null }),
     });
     if (!res.ok) return null;
     const json = (await res.json()) as { lastClickVerifiedAt?: string | null };
@@ -691,13 +774,10 @@ export async function triggerExpiredCleanupDiagnostic(): Promise<{
   error?: string;
 }> {
   const { deviceId, deviceToken } = getOrCreateDeviceCredentials();
-  const res = await fetch('/api/push/test-expired-cleanup', {
+  const res = await fetch(backendEndpoint('test-expired-cleanup'), {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Device-Token': deviceToken,
-    },
-    body: JSON.stringify({ deviceId, deviceToken }),
+    headers: buildBackendHeaders(deviceToken),
+    body: JSON.stringify({ action: 'simulate-410', deviceId, deviceToken }),
   });
   const json = (await res.json()) as {
     ok?: boolean;
@@ -713,13 +793,35 @@ export async function triggerExpiredCleanupDiagnostic(): Promise<{
 
 export async function fetchPushDiagnostics(): Promise<PushDiagnosticsResponse | null> {
   const { deviceId, deviceToken } = getOrCreateDeviceCredentials();
-  const res = await fetch(`/api/push/diagnostics?deviceId=${encodeURIComponent(deviceId)}`, {
-    headers: {
-      'X-Device-Token': deviceToken,
-    },
+  const res = await fetch(backendEndpoint('diagnostics', deviceId), {
+    headers: buildBackendHeaders(deviceToken, false),
   });
   if (!res.ok) return null;
   return (await res.json()) as PushDiagnosticsResponse;
+}
+
+export async function fetchVapidPublicKeyStatus(): Promise<{
+  ok: boolean;
+  error?: string;
+  setupInstructions?: string[];
+}> {
+  try {
+    const res = await fetch(backendEndpoint('vapid-public-key'), {
+      headers: buildBackendHeaders(undefined, false),
+    });
+    if (res.ok) return { ok: true };
+    const data = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      setupInstructions?: string[];
+    };
+    return {
+      ok: false,
+      error: data.error,
+      setupInstructions: Array.isArray(data.setupInstructions) ? data.setupInstructions : [],
+    };
+  } catch {
+    return { ok: true };
+  }
 }
 
 export async function pingServiceWorker(): Promise<{ ok: boolean; swVersion?: string }> {

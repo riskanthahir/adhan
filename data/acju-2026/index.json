@@ -1,0 +1,269 @@
+{
+  "timezone": "Asia/Colombo",
+  "reference_year": 2026,
+  "source": "All-Ceylon Jamiyyathul Ulama (ACJU) Official 2026 Timetable",
+  "district_count": 29,
+  "districts": [
+    {
+      "district_id": "colombo",
+      "district_name": "Colombo",
+      "zone_id": 1,
+      "zone_code": "ZONE_01",
+      "file": "colombo.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z1"
+    },
+    {
+      "district_id": "gampaha",
+      "district_name": "Gampaha",
+      "zone_id": 1,
+      "zone_code": "ZONE_01",
+      "file": "gampaha.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z1"
+    },
+    {
+      "district_id": "kalutara",
+      "district_name": "Kalutara",
+      "zone_id": 1,
+      "zone_code": "ZONE_01",
+      "file": "kalutara.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z1"
+    },
+    {
+      "district_id": "nallur",
+      "district_name": "Nallur",
+      "zone_id": 2,
+      "zone_code": "ZONE_02",
+      "file": "nallur.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z2"
+    },
+    {
+      "district_id": "jaffna",
+      "district_name": "Jaffna",
+      "zone_id": 2,
+      "zone_code": "ZONE_02",
+      "file": "jaffna.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z2"
+    },
+    {
+      "district_id": "mullaitivu",
+      "district_name": "Mullaitivu",
+      "zone_id": 3,
+      "zone_code": "ZONE_03",
+      "file": "mullaitivu.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z3"
+    },
+    {
+      "district_id": "kilinochchi",
+      "district_name": "Kilinochchi",
+      "zone_id": 3,
+      "zone_code": "ZONE_03",
+      "file": "kilinochchi.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z3"
+    },
+    {
+      "district_id": "vavuniya",
+      "district_name": "Vavuniya",
+      "zone_id": 3,
+      "zone_code": "ZONE_03",
+      "file": "vavuniya.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z3"
+    },
+    {
+      "district_id": "mannar",
+      "district_name": "Mannar",
+      "zone_id": 4,
+      "zone_code": "ZONE_04",
+      "file": "mannar.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z4"
+    },
+    {
+      "district_id": "puttalam",
+      "district_name": "Puttalam",
+      "zone_id": 4,
+      "zone_code": "ZONE_04",
+      "file": "puttalam.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z4"
+    },
+    {
+      "district_id": "anuradhapura",
+      "district_name": "Anuradhapura",
+      "zone_id": 5,
+      "zone_code": "ZONE_05",
+      "file": "anuradhapura.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z5"
+    },
+    {
+      "district_id": "polonnaruwa",
+      "district_name": "Polonnaruwa",
+      "zone_id": 5,
+      "zone_code": "ZONE_05",
+      "file": "polonnaruwa.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z5"
+    },
+    {
+      "district_id": "kurunegala",
+      "district_name": "Kurunegala",
+      "zone_id": 6,
+      "zone_code": "ZONE_06",
+      "file": "kurunegala.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z6"
+    },
+    {
+      "district_id": "gampola",
+      "district_name": "Gampola",
+      "zone_id": 7,
+      "zone_code": "ZONE_07",
+      "file": "gampola.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z7"
+    },
+    {
+      "district_id": "kandy",
+      "district_name": "Kandy",
+      "zone_id": 7,
+      "zone_code": "ZONE_07",
+      "file": "kandy.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z7"
+    },
+    {
+      "district_id": "matale",
+      "district_name": "Matale",
+      "zone_id": 7,
+      "zone_code": "ZONE_07",
+      "file": "matale.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z7"
+    },
+    {
+      "district_id": "nuwara-eliya",
+      "district_name": "Nuwara Eliya",
+      "zone_id": 7,
+      "zone_code": "ZONE_07",
+      "file": "nuwara-eliya.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z7"
+    },
+    {
+      "district_id": "padiyatalawa",
+      "district_name": "Padiyatalawa",
+      "zone_id": 10,
+      "zone_code": "ZONE_10",
+      "file": "padiyatalawa.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z10"
+    },
+    {
+      "district_id": "dehiaththekandiya",
+      "district_name": "Dehiaththekandiya",
+      "zone_id": 10,
+      "zone_code": "ZONE_10",
+      "file": "dehiaththekandiya.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z10"
+    },
+    {
+      "district_id": "batticaloa",
+      "district_name": "Batticaloa",
+      "zone_id": 8,
+      "zone_code": "ZONE_08",
+      "file": "batticaloa.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z8"
+    },
+    {
+      "district_id": "ampara",
+      "district_name": "Ampara",
+      "zone_id": 8,
+      "zone_code": "ZONE_08",
+      "file": "ampara.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z8"
+    },
+    {
+      "district_id": "trincomalee",
+      "district_name": "Trincomalee",
+      "zone_id": 9,
+      "zone_code": "ZONE_09",
+      "file": "trincomalee.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z9"
+    },
+    {
+      "district_id": "badulla",
+      "district_name": "Badulla",
+      "zone_id": 10,
+      "zone_code": "ZONE_10",
+      "file": "badulla.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z10"
+    },
+    {
+      "district_id": "monaragala",
+      "district_name": "Monaragala",
+      "zone_id": 10,
+      "zone_code": "ZONE_10",
+      "file": "monaragala.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z10"
+    },
+    {
+      "district_id": "ratnapura",
+      "district_name": "Ratnapura",
+      "zone_id": 11,
+      "zone_code": "ZONE_11",
+      "file": "ratnapura.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z11"
+    },
+    {
+      "district_id": "kegalle",
+      "district_name": "Kegalle",
+      "zone_id": 11,
+      "zone_code": "ZONE_11",
+      "file": "kegalle.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z11"
+    },
+    {
+      "district_id": "galle",
+      "district_name": "Galle",
+      "zone_id": 12,
+      "zone_code": "ZONE_12",
+      "file": "galle.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z12"
+    },
+    {
+      "district_id": "matara",
+      "district_name": "Matara",
+      "zone_id": 12,
+      "zone_code": "ZONE_12",
+      "file": "matara.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z12"
+    },
+    {
+      "district_id": "hambantota",
+      "district_name": "Hambantota",
+      "zone_id": 13,
+      "zone_code": "ZONE_13",
+      "file": "hambantota.json",
+      "record_count": 365,
+      "source_version": "acju-2026-official-z13"
+    }
+  ]
+}
