@@ -88,8 +88,7 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          enabled: true,
-          type: 'module',
+          enabled: false,
         },
       }),
       // Copies src/assets into dist/ so root-relative URLs like
@@ -111,9 +110,20 @@ export default defineConfig(() => {
       },
     ],
     resolve: {
+      dedupe: ['react', 'react-dom'],
       alias: {
         '@': path.resolve(__dirname, '.'),
       },
+    },
+    optimizeDeps: {
+      include: [
+        'react',
+        'react-dom',
+        'react/jsx-runtime',
+        'react-dom/client',
+        'lucide-react',
+        'motion/react',
+      ],
     },
     server: {
       port: 3000,

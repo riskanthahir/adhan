@@ -136,47 +136,59 @@ export const HomeView: React.FC<HomeViewProps> = ({
         </motion.section>
       ) : (
         <div className="grid gap-4 sm:gap-6 lg:grid-cols-12 lg:items-start">
-          {/* Unified Next Prayer Hero Card (Location + Date + Live Countdown + Quick Actions) */}
+          {/* Sleek Next Prayer Hero Card (Location + Date + Live Countdown + Quick Actions) */}
           <motion.section
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-            className="lg:col-span-5 overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-900 via-emerald-900 to-emerald-950 p-4 sm:p-6 text-white shadow-sm dark:border dark:border-emerald-800/60"
+            transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
+            className="relative lg:col-span-5 overflow-hidden rounded-3xl border border-emerald-700/40 bg-gradient-to-br from-emerald-950 via-[#0b3d2b] to-[#062319] p-5 sm:p-6 text-white shadow-[0_20px_45px_-18px_rgba(6,78,59,0.55)]"
           >
-            {/* Integrated Location Selector + Date Summary */}
-            <div className="flex items-start justify-between gap-3">
+            {/* Subtle atmospheric glow & hairline sheen */}
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute -top-20 -right-16 h-52 w-52 rounded-full bg-amber-300/12 blur-3xl"
+            />
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 rounded-3xl ring-1 ring-inset ring-white/10"
+            />
+
+            {/* Sleek Top Location & Live Clock Bar */}
+            <div className="relative flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <motion.button
-                  whileTap={{ scale: 0.98 }}
+                  whileTap={{ scale: 0.97 }}
                   type="button"
                   onClick={onOpenLocationModal}
                   aria-label="Change Sri Lanka area or ACJU zone"
-                  className="group inline-flex min-h-[36px] max-w-full items-center gap-1.5 rounded-xl bg-white/10 px-3 py-1.5 text-left text-xs font-medium text-white transition-colors hover:bg-white/15"
+                  className="group inline-flex min-h-[38px] max-w-full items-center gap-2 rounded-2xl bg-white/[0.08] px-3.5 py-1.5 text-left text-xs font-medium text-white ring-1 ring-inset ring-white/12 backdrop-blur-sm transition-colors hover:bg-white/[0.14]"
                 >
                   <MapPin className="h-3.5 w-3.5 shrink-0 text-amber-300" aria-hidden="true" />
                   <span className="truncate">{locationDisplay}</span>
                   <ChevronRight
-                    className="h-3.5 w-3.5 shrink-0 text-emerald-200 transition-transform group-hover:translate-x-0.5"
+                    className="h-3.5 w-3.5 shrink-0 text-emerald-200/80 transition-transform group-hover:translate-x-0.5"
                     aria-hidden="true"
                   />
                 </motion.button>
-                <p className="mt-2 text-xs text-emerald-100/80">
+                <p className="mt-2.5 text-xs text-emerald-100/80">
                   {colombo.formattedGregorian} · {hijriEstimated} (Est.)
                 </p>
-                <p className="mt-0.5 text-[11px] text-emerald-200/70">
+                <p className="mt-0.5 text-[11px] text-emerald-200/60">
                   {selectedZone.officialDescription} · {detectionMethod === 'gps' ? 'GPS' : 'Manual'}
                 </p>
               </div>
 
-              <div className="shrink-0 text-right">
-                <p className="font-mono-tabular text-xs font-medium text-emerald-100/90">
+              <div className="shrink-0 text-right pt-0.5">
+                <p className="font-mono-tabular text-sm font-semibold tracking-tight text-white/95">
                   {colombo.formattedTime}
                 </p>
-                <p className="mt-0.5 text-[11px] text-emerald-200/70">Colombo</p>
+                <p className="mt-0.5 text-[10px] font-medium tracking-[0.12em] uppercase text-emerald-200/60">
+                  Colombo
+                </p>
               </div>
             </div>
 
-            {/* Animated Next Prayer Focal Display */}
+            {/* Inset Glass Countdown Panel */}
             {nextPrayer ? (
               <AnimatePresence mode="wait">
                 <motion.div
@@ -185,34 +197,36 @@ export const HomeView: React.FC<HomeViewProps> = ({
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -6 }}
                   transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-                  className="mt-4 sm:mt-5"
+                  className="relative mt-4 sm:mt-5 rounded-2xl bg-black/22 p-4 sm:p-5 ring-1 ring-inset ring-white/10 backdrop-blur-xs"
                 >
-                  <p className="text-xs sm:text-sm text-emerald-100/90">
-                    Next prayer {nextPrayer.isTomorrow ? 'tomorrow' : 'today'}
-                  </p>
-                  <div className="mt-0.5 flex items-baseline justify-between gap-3">
-                    <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
-                      {nextPrayer.label}
-                    </h1>
-                    <span className="font-mono-tabular text-xl sm:text-2xl font-medium text-amber-300">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] font-medium tracking-[0.14em] uppercase text-emerald-200/75">
+                      Next prayer {nextPrayer.isTomorrow ? 'tomorrow' : 'today'}
+                    </p>
+                    <span className="font-mono-tabular text-base sm:text-lg font-semibold text-amber-300">
                       {formatTime12h(nextPrayer.timeHHMM)}
                     </span>
                   </div>
 
-                  {/* Live Countdown + Smooth Progress Track */}
-                  <div className="mt-4 sm:mt-5 space-y-2.5 border-t border-emerald-800/80 pt-3.5 sm:pt-4">
+                  <div className="mt-1 flex items-baseline justify-between gap-3">
+                    <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight text-white">
+                      {nextPrayer.label}
+                    </h1>
+                  </div>
+
+                  <div className="mt-4 space-y-2.5 border-t border-white/10 pt-3.5">
                     <div className="flex items-baseline justify-between gap-3">
-                      <p className="text-xs text-emerald-200">Time remaining</p>
-                      <p className="font-mono-tabular text-3xl sm:text-4xl font-semibold tracking-tight text-white">
+                      <p className="text-xs text-emerald-100/70">Time remaining</p>
+                      <p className="font-mono-tabular text-2xl sm:text-3xl font-semibold tracking-tight text-white">
                         {nextPrayer.countdownFormatted}
                       </p>
                     </div>
                     <div
                       aria-hidden="true"
-                      className="h-1.5 w-full overflow-hidden rounded-full bg-emerald-950/70"
+                      className="h-1.5 w-full overflow-hidden rounded-full bg-white/10"
                     >
                       <motion.div
-                        className="h-full rounded-full bg-amber-300"
+                        className="h-full rounded-full bg-gradient-to-r from-amber-300 to-emerald-300"
                         initial={{ width: 0 }}
                         animate={{ width: `${countdownProgress}%` }}
                         transition={{ duration: 0.5, ease: 'easeOut' }}
@@ -222,7 +236,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
                 </motion.div>
               </AnimatePresence>
             ) : (
-              <div className="mt-4 sm:mt-5">
+              <div className="relative mt-4 sm:mt-5 rounded-2xl bg-black/22 p-4 ring-1 ring-inset ring-white/10">
                 <h1 className="text-lg sm:text-xl font-semibold">All five daily prayers completed</h1>
                 <p className="mt-1.5 text-xs sm:text-sm text-emerald-100/80">
                   Tomorrow&apos;s Fajr schedule is unavailable for this leap-year boundary.
@@ -231,21 +245,21 @@ export const HomeView: React.FC<HomeViewProps> = ({
             )}
 
             {/* Quick Actions */}
-            <div className="mt-4 sm:mt-5 grid grid-cols-2 gap-2 border-t border-emerald-800/80 pt-3.5 sm:flex sm:flex-wrap sm:items-center sm:pt-4">
+            <div className="relative mt-4 sm:mt-5 grid grid-cols-2 gap-2.5 sm:flex sm:flex-wrap sm:items-center">
               <motion.button
                 whileTap={{ scale: 0.97 }}
                 type="button"
                 onClick={onPreviewAudio}
-                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-white/10 px-3 sm:px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-white/20"
+                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-2xl bg-white/[0.12] px-4 py-2 text-xs font-medium text-white ring-1 ring-inset ring-white/15 transition-colors hover:bg-white/[0.18]"
               >
-                <Volume2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <Volume2 className="h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
                 <span className="truncate">Test Adhan</span>
               </motion.button>
               <motion.button
                 whileTap={{ scale: 0.97 }}
                 type="button"
                 onClick={() => onNavigateTab('audio')}
-                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-white/5 sm:bg-transparent px-3 py-2 text-xs font-medium text-emerald-100 transition-colors hover:bg-white/10"
+                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-2xl bg-transparent px-4 py-2 text-xs font-medium text-emerald-100/90 ring-1 ring-inset ring-white/10 transition-colors hover:bg-white/[0.08]"
               >
                 <span className="truncate">Reminder Settings</span>
               </motion.button>
