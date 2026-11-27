@@ -145,6 +145,27 @@ export function validateTimetableRows(
           message: `Unusual Isha time (${row.isha}) for Sri Lanka; please double-check source PDF.`,
         });
       }
+
+      if (row.sunrise) {
+        const sunriseMins = parseTimeToMinutes(row.sunrise);
+        if (sunriseMins === null) {
+          issues.push({
+            rowIndex: idx,
+            date: row.referenceDate,
+            field: 'sunrise',
+            severity: 'error',
+            message: `Invalid Sunrise time "${row.sunrise}" (expected HH:MM 24-hour format).`,
+          });
+        } else if (sunriseMins <= mins[0] || sunriseMins >= mins[1]) {
+          issues.push({
+            rowIndex: idx,
+            date: row.referenceDate,
+            field: 'sunrise',
+            severity: 'error',
+            message: `Chronological inconsistency on ${row.referenceDate}: Sunrise (${row.sunrise}) must be between Fajr (${row.fajr}) and Dhuhr (${row.dhuhr}).`,
+          });
+        }
+      }
     }
   });
 
@@ -217,6 +238,7 @@ export function resolveScheduleForDate(params: {
       statusMessage: `Verified official ${exactYearMatch.referenceYear} ACJU timetable.`,
       times: {
         fajr: exactYearMatch.fajr,
+        ...(exactYearMatch.sunrise ? { sunrise: exactYearMatch.sunrise } : {}),
         dhuhr: exactYearMatch.dhuhr,
         asr: exactYearMatch.asr,
         maghrib: exactYearMatch.maghrib,
@@ -267,6 +289,7 @@ export function resolveScheduleForDate(params: {
           'Annual repeat from 2026 ACJU reference dataset — not newly published ACJU data.',
         times: {
           fajr: ref2026Match.fajr,
+          ...(ref2026Match.sunrise ? { sunrise: ref2026Match.sunrise } : {}),
           dhuhr: ref2026Match.dhuhr,
           asr: ref2026Match.asr,
           maghrib: ref2026Match.maghrib,
@@ -298,6 +321,7 @@ export function resolveScheduleForDate(params: {
           'Local Demo Sample — placeholder data only. NOT verified ACJU prayer times; live reminders are disabled.',
         times: {
           fajr: sampleMatch.fajr,
+          ...(sampleMatch.sunrise ? { sunrise: sampleMatch.sunrise } : {}),
           dhuhr: sampleMatch.dhuhr,
           asr: sampleMatch.asr,
           maghrib: sampleMatch.maghrib,

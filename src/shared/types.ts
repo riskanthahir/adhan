@@ -66,6 +66,7 @@ export interface PrayerTimesRow {
   day: number; // 1..31
   referenceDate: string; // YYYY-MM-DD
   fajr: string; // HH:MM (24h)
+  sunrise?: string; // HH:MM (24h)
   dhuhr: string;
   asr: string;
   maghrib: string;
@@ -98,6 +99,7 @@ export interface ResolvedDaySchedule {
   statusMessage: string;
   times: {
     fajr: string;
+    sunrise?: string;
     dhuhr: string;
     asr: string;
     maghrib: string;

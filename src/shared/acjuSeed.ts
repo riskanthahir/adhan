@@ -495,6 +495,7 @@ export function buildDemoSampleMonthRecords(
       day: d,
       referenceDate: refDate,
       fajr: shift(4 * 60 + 50),
+      sunrise: shift(6 * 60 + 20),
       dhuhr: shift(12 * 60 + 6),
       asr: shift(15 * 60 + 28),
       maghrib: shift(18 * 60 + 4),

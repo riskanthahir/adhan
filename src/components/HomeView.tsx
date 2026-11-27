@@ -6,6 +6,7 @@ import {
   Calendar,
   ChevronRight,
   MapPin,
+  Sunrise,
   Volume2,
 } from 'lucide-react';
 import {
@@ -281,80 +282,124 @@ export const HomeView: React.FC<HomeViewProps> = ({
               const enabled = preferences.perPrayerEnabled[prayer];
               const advance = preferences.advanceMinutes[prayer];
 
+              const sunriseTime = todaySchedule.times!.sunrise;
+
               return (
-                <motion.div
-                  key={prayer}
-                  layout
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{
-                    duration: 0.24,
-                    delay: idx * 0.04,
-                    ease: [0.22, 1, 0.36, 1],
-                  }}
-                  className={`flex min-h-[60px] sm:min-h-[68px] items-center justify-between gap-3 sm:gap-4 rounded-2xl border px-4 py-2.5 sm:px-5 sm:py-3.5 transition-colors ${
-                    isNext
-                      ? 'border-emerald-700 bg-emerald-50/70 shadow-xs dark:border-emerald-600 dark:bg-emerald-950/40'
-                      : 'border-stone-200 bg-white dark:border-slate-800 dark:bg-slate-900'
-                  }`}
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm sm:text-base font-semibold text-slate-900 dark:text-slate-50">
-                        {PRAYER_LABELS[prayer]}
-                      </span>
-                      {isNext && (
-                        <motion.span
-                          initial={{ opacity: 0, scale: 0.9 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          className="text-xs font-medium text-emerald-800 dark:text-emerald-300"
-                        >
-                          · Next
-                        </motion.span>
-                      )}
-                    </div>
-                    <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                      {!canScheduleReminders
-                        ? 'Reminders paused'
-                        : enabled
-                        ? advance > 0
-                          ? `Reminder ${advance} min before`
-                          : 'Reminder at prayer time'
-                        : 'Reminder off'}
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
-                    <div className="text-right">
-                      <p className="font-mono-tabular text-base sm:text-lg font-semibold text-slate-900 dark:text-slate-50">
-                        {formatTime12h(time24)}
-                      </p>
-                      <p className="font-mono-tabular text-[11px] sm:text-xs text-slate-500 dark:text-slate-400">
-                        {time24}
+                <React.Fragment key={prayer}>
+                  <motion.div
+                    layout
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{
+                      duration: 0.24,
+                      delay: idx * 0.04,
+                      ease: [0.22, 1, 0.36, 1],
+                    }}
+                    className={`flex min-h-[60px] sm:min-h-[68px] items-center justify-between gap-3 sm:gap-4 rounded-2xl border px-4 py-2.5 sm:px-5 sm:py-3.5 transition-colors ${
+                      isNext
+                        ? 'border-emerald-700 bg-emerald-50/70 shadow-xs dark:border-emerald-600 dark:bg-emerald-950/40'
+                        : 'border-stone-200 bg-white dark:border-slate-800 dark:bg-slate-900'
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm sm:text-base font-semibold text-slate-900 dark:text-slate-50">
+                          {PRAYER_LABELS[prayer]}
+                        </span>
+                        {isNext && (
+                          <motion.span
+                            initial={{ opacity: 0, scale: 0.9 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            className="text-xs font-medium text-emerald-800 dark:text-emerald-300"
+                          >
+                            · Next
+                          </motion.span>
+                        )}
+                      </div>
+                      <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                        {!canScheduleReminders
+                          ? 'Reminders paused'
+                          : enabled
+                          ? advance > 0
+                            ? `Reminder ${advance} min before`
+                            : 'Reminder at prayer time'
+                          : 'Reminder off'}
                       </p>
                     </div>
 
-                    <motion.button
-                      whileTap={{ scale: 0.92 }}
-                      type="button"
-                      disabled={!canScheduleReminders}
-                      onClick={() => onTogglePrayerReminder(prayer)}
-                      aria-label={`Toggle ${PRAYER_LABELS[prayer]} reminder`}
-                      aria-pressed={enabled && canScheduleReminders}
-                      className={`inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl border transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                        enabled && canScheduleReminders
-                          ? 'border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-                          : 'border-stone-200 bg-stone-50 text-slate-500 hover:bg-stone-100 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-400'
-                      }`}
+                    <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
+                      <div className="text-right">
+                        <p className="font-mono-tabular text-base sm:text-lg font-semibold text-slate-900 dark:text-slate-50">
+                          {formatTime12h(time24)}
+                        </p>
+                        <p className="font-mono-tabular text-[11px] sm:text-xs text-slate-500 dark:text-slate-400">
+                          {time24}
+                        </p>
+                      </div>
+
+                      <motion.button
+                        whileTap={{ scale: 0.92 }}
+                        type="button"
+                        disabled={!canScheduleReminders}
+                        onClick={() => onTogglePrayerReminder(prayer)}
+                        aria-label={`Toggle ${PRAYER_LABELS[prayer]} reminder`}
+                        aria-pressed={enabled && canScheduleReminders}
+                        className={`inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl border transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                          enabled && canScheduleReminders
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                            : 'border-stone-200 bg-stone-50 text-slate-500 hover:bg-stone-100 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-400'
+                        }`}
+                      >
+                        {enabled && canScheduleReminders ? (
+                          <Bell className="h-4 w-4" />
+                        ) : (
+                          <BellOff className="h-4 w-4" />
+                        )}
+                      </motion.button>
+                    </div>
+                  </motion.div>
+
+                  {prayer === 'fajr' && sunriseTime && (
+                    <motion.div
+                      layout
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{
+                        duration: 0.24,
+                        delay: 0.03,
+                        ease: [0.22, 1, 0.36, 1],
+                      }}
+                      className="flex min-h-[56px] sm:min-h-[62px] items-center justify-between gap-3 sm:gap-4 rounded-2xl border border-amber-200/80 bg-amber-50/45 px-4 py-2 sm:px-5 sm:py-3 dark:border-amber-900/50 dark:bg-amber-950/20"
                     >
-                      {enabled && canScheduleReminders ? (
-                        <Bell className="h-4 w-4" />
-                      ) : (
-                        <BellOff className="h-4 w-4" />
-                      )}
-                    </motion.button>
-                  </div>
-                </motion.div>
+                      <div className="min-w-0">
+                        <span className="text-sm sm:text-base font-semibold text-amber-950 dark:text-amber-100">
+                          Sunrise
+                        </span>
+                        <p className="mt-0.5 text-xs text-amber-800/80 dark:text-amber-300/80">
+                          End of Fajr window (no Adhan)
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
+                        <div className="text-right">
+                          <p className="font-mono-tabular text-base sm:text-lg font-semibold text-amber-950 dark:text-amber-100">
+                            {formatTime12h(sunriseTime)}
+                          </p>
+                          <p className="font-mono-tabular text-[11px] sm:text-xs text-amber-800/75 dark:text-amber-300/75">
+                            {sunriseTime}
+                          </p>
+                        </div>
+
+                        <div
+                          aria-hidden="true"
+                          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl border border-amber-200/80 bg-amber-100/70 text-amber-700 dark:border-amber-800/60 dark:bg-amber-950/60 dark:text-amber-300"
+                        >
+                          <Sunrise className="h-4 w-4" />
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </React.Fragment>
               );
             })}
           </section>

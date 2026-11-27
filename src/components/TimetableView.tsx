@@ -59,10 +59,10 @@ export const TimetableView: React.FC<TimetableViewProps> = ({
   const handleExportCsv = () => {
     const verifiedDays = days.filter((d) => d.isVerified && d.times);
     if (verifiedDays.length === 0) return;
-    const header = 'date,zone_id,source,fajr,dhuhr,asr,maghrib,isha';
+    const header = 'date,zone_id,source,fajr,sunrise,dhuhr,asr,maghrib,isha';
     const rows = verifiedDays.map(
       (d) =>
-        `${d.targetDate},${d.zoneId},${d.scheduleSource},${d.times!.fajr},${d.times!.dhuhr},${d.times!.asr},${d.times!.maghrib},${d.times!.isha}`
+        `${d.targetDate},${d.zoneId},${d.scheduleSource},${d.times!.fajr},${d.times!.sunrise ?? ''},${d.times!.dhuhr},${d.times!.asr},${d.times!.maghrib},${d.times!.isha}`
     );
     const blob = new Blob([[header, ...rows].join('\n')], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -163,6 +163,7 @@ export const TimetableView: React.FC<TimetableViewProps> = ({
               <tr className="border-b border-stone-200 bg-stone-50 text-xs font-medium text-slate-600 dark:border-slate-800 dark:bg-slate-950/60 dark:text-slate-400">
                 <th className="px-4 py-3 whitespace-nowrap">Date</th>
                 <th className="px-4 py-3 whitespace-nowrap">Fajr</th>
+                <th className="px-4 py-3 whitespace-nowrap text-amber-800 dark:text-amber-300">Sunrise</th>
                 <th className="px-4 py-3 whitespace-nowrap">Dhuhr</th>
                 <th className="px-4 py-3 whitespace-nowrap">Asr</th>
                 <th className="px-4 py-3 whitespace-nowrap">Maghrib</th>
@@ -195,6 +196,9 @@ export const TimetableView: React.FC<TimetableViewProps> = ({
                         <td className="px-4 py-3 font-mono-tabular whitespace-nowrap text-slate-800 dark:text-slate-200">
                           {formatTime12h(row.times.fajr)}
                         </td>
+                        <td className="px-4 py-3 font-mono-tabular whitespace-nowrap text-amber-800 dark:text-amber-300">
+                          {row.times.sunrise ? formatTime12h(row.times.sunrise) : '—'}
+                        </td>
                         <td className="px-4 py-3 font-mono-tabular whitespace-nowrap text-slate-800 dark:text-slate-200">
                           {formatTime12h(row.times.dhuhr)}
                         </td>
@@ -210,7 +214,7 @@ export const TimetableView: React.FC<TimetableViewProps> = ({
                       </>
                     ) : (
                       <td
-                        colSpan={5}
+                        colSpan={6}
                         className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400"
                       >
                         Unavailable — Feb 29 leap-year policy (no invented time)

@@ -32,15 +32,28 @@ describe('Embedded Official 2026 ACJU Dataset (All 13 Zones × 365 Days)', () =>
     expect(colomboJan1.isVerified).toBe(true);
     expect(colomboJan1.isAnnualRepeat).toBe(false);
     expect(colomboJan1.times).not.toBeNull();
+    expect(colomboJan1.times?.sunrise).toBe('06:22');
 
     const gampola2028Repeat = resolveEmbeddedDaySchedule(7, '2028-05-15');
     expect(gampola2028Repeat.isVerified).toBe(true);
     expect(gampola2028Repeat.isAnnualRepeat).toBe(true);
     expect(gampola2028Repeat.scheduleSource).toBe('annual_repeat_2026');
+    expect(gampola2028Repeat.times?.sunrise).toMatch(/^\d{2}:\d{2}$/);
 
     const leapDay = resolveEmbeddedDaySchedule(1, '2028-02-29');
     expect(leapDay.scheduleSource).toBe('unavailable_leap_day');
     expect(leapDay.times).toBeNull();
+  });
+
+  it('includes valid Sunrise between Fajr and Dhuhr for all 4,745 embedded records', () => {
+    for (let z = 1; z <= 13; z++) {
+      for (const [mmdd, packed] of Object.entries(ACJU_2026_TIMETABLE_COMPACT[z] ?? {})) {
+        const parts = packed.split('|');
+        expect(parts.length, `Zone ${z} ${mmdd}`).toBe(6);
+        const [fajr, sunrise, dhuhr, asr, maghrib, isha] = parts;
+        expect(fajr < sunrise && sunrise < dhuhr && dhuhr < asr && asr < maghrib && maghrib < isha).toBe(true);
+      }
+    }
   });
 });
 
@@ -309,6 +322,7 @@ describe('Duplicate Reminder Prevention & Parser Validation', () => {
     expect(parsedJan.rows[0]).toMatchObject({
       referenceDate: '2026-01-01',
       fajr: '04:57',
+      sunrise: '06:20',
       dhuhr: '12:12',
       asr: '15:33',
       maghrib: '18:03',
