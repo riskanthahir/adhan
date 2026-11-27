@@ -19,6 +19,7 @@ import {
   type LocationPermissionUiState,
 } from './components/PermissionsModal';
 import { PWAInstallButton } from './components/PWAInstallModal';
+import { PushDiagnosticsView } from './components/PushDiagnosticsView';
 import { SettingsAboutView } from './components/SettingsAboutView';
 import { TimetableView } from './components/TimetableView';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
@@ -34,6 +35,15 @@ import {
   createReminderAdapter,
   type ScheduledReminderSummary,
 } from './lib/reminders';
+import {
+  disableBackgroundPushNotifications,
+  enableBackgroundPushNotifications,
+  fetchBackendPushStatus,
+  sendBackendTestPushNotification,
+  syncPushPreferencesToBackend,
+  verifyPushClickWithBackend,
+  type BackendSubscriptionSummary,
+} from './lib/webPushClient';
 import { resolveEmbeddedDaySchedule } from './shared/acju2026Timetable';
 import { ACJU_DISTRICTS, ACJU_ZONES } from './shared/acjuSeed';
 import { resolveLocationFromCoordinates } from './shared/locationLookup';
@@ -51,7 +61,7 @@ import {
   type UserPreferences,
 } from './shared/types';
 
-type AppTab = 'today' | 'timetable' | 'audio' | 'settings';
+type AppTab = 'today' | 'timetable' | 'audio' | 'settings' | 'diagnostics';
 
 const PREFS_STORAGE_KEY = 'my_adhan_prefs_v2';
 const LEGACY_PREFS_STORAGE_KEY = 'my_adhan_prefs_v1';
@@ -253,6 +263,52 @@ export default function App() {
   );
   const [onboardingLocationLabel, setOnboardingLocationLabel] = useState<string | null>(null);
   const [onboardingLocationMessage, setOnboardingLocationMessage] = useState<string | null>(null);
+  const [backendPushSubscription, setBackendPushSubscription] =
+    useState<BackendSubscriptionSummary | null>(null);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushFeedback, setPushFeedback] = useState<string | null>(null);
+
+  const refreshBackendPushStatus = useCallback(async () => {
+    try {
+      const res = await fetchBackendPushStatus();
+      setBackendPushSubscription(res.subscription);
+      setCapabilities(reminderAdapterRef.current.getCapabilities());
+    } catch {
+      // Ignore offline fetch failure
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshBackendPushStatus();
+  }, [refreshBackendPushStatus]);
+
+  // Verify push notification click opens and sync district/preferences when returning from a push tap
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('view') === 'diagnostics') {
+      setActiveTab('diagnostics');
+    }
+    if (params.get('fromPush') === '1') {
+      void verifyPushClickWithBackend(params.get('eventKey')).then(() => {
+        void refreshBackendPushStatus();
+      });
+    }
+
+    const onSwMsg = (evt: MessageEvent) => {
+      const data = evt.data as { type?: string; eventKey?: string } | undefined;
+      if (data?.type === 'NOTIFICATION_CLICKED') {
+        void verifyPushClickWithBackend(data.eventKey).then(() => {
+          void refreshBackendPushStatus();
+        });
+      }
+    };
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', onSwMsg);
+      return () => navigator.serviceWorker.removeEventListener('message', onSwMsg);
+    }
+    return undefined;
+  }, [refreshBackendPushStatus]);
 
   // Inspect existing geolocation permission on mount while onboarding is open
   useEffect(() => {
@@ -771,24 +827,98 @@ export default function App() {
     };
   }, []);
 
-  const handleRequestNotificationPermission = async () => {
-    const permPromise = reminderAdapterRef.current.requestPermission();
-    void unlockAudioForSession().then((ok) => {
-      if (ok) setAudioUnlocked(true);
-    });
-    await permPromise;
-    setCapabilities(reminderAdapterRef.current.getCapabilities());
-  };
+  // Auto-sync district or prayer rule changes to backend whenever background push is active
+  useEffect(() => {
+    if (backendPushSubscription?.status !== 'active') return;
+    const id = window.setTimeout(() => {
+      void syncPushPreferencesToBackend({
+        districtId: selectedDistrict.id,
+        perPrayerEnabled: preferences.perPrayerEnabled,
+        advanceMinutes: preferences.advanceMinutes,
+      }).then((updated) => {
+        if (updated) {
+          setBackendPushSubscription(updated);
+        }
+      });
+    }, 300);
+    return () => window.clearTimeout(id);
+  }, [
+    backendPushSubscription?.status,
+    selectedDistrict.id,
+    preferences.perPrayerEnabled,
+    preferences.advanceMinutes,
+  ]);
 
-  const handleSendTestNotification = async (): Promise<boolean> => {
-    const testPromise = reminderAdapterRef.current.sendTestNotification(selectedZone.name);
-    void unlockAudioForSession().then((ok) => {
+  const handleEnableBackgroundPush = useCallback(async () => {
+    setPushBusy(true);
+    setPushFeedback(null);
+    // Start synchronous permission + PushManager registration inside user gesture
+    const enablePromise = enableBackgroundPushNotifications({
+      districtId: selectedDistrict.id,
+      perPrayerEnabled: preferences.perPrayerEnabled,
+      advanceMinutes: preferences.advanceMinutes,
+    });
+    void unlockAudioForSession(selectedBuiltinTrack).then((ok) => {
       if (ok) setAudioUnlocked(true);
     });
-    const sent = await testPromise;
-    setCapabilities(reminderAdapterRef.current.getCapabilities());
-    return sent;
-  };
+    try {
+      const res = await enablePromise;
+      setCapabilities(reminderAdapterRef.current.getCapabilities());
+      if (res.ok && res.subscription) {
+        setBackendPushSubscription(res.subscription);
+        setPushFeedback(
+          `Background Web Push active for ${res.subscription.zoneName}. Prayer alerts will arrive even when closed or locked.`
+        );
+      } else {
+        setPushFeedback(res.error || 'Could not enable background push notifications.');
+      }
+    } finally {
+      setPushBusy(false);
+    }
+  }, [
+    selectedDistrict.id,
+    preferences.perPrayerEnabled,
+    preferences.advanceMinutes,
+    selectedBuiltinTrack,
+  ]);
+
+  const handleDisableBackgroundPush = useCallback(async () => {
+    setPushBusy(true);
+    setPushFeedback(null);
+    try {
+      const res = await disableBackgroundPushNotifications();
+      if (res.ok) {
+        setBackendPushSubscription(res.subscription);
+        setPushFeedback('Background push notifications disabled for this device.');
+      } else {
+        setPushFeedback(res.error || 'Failed to disable background push notifications.');
+      }
+    } finally {
+      setPushBusy(false);
+    }
+  }, []);
+
+  const handleSendBackgroundTestPush = useCallback(async () => {
+    setPushBusy(true);
+    setPushFeedback(null);
+    try {
+      const res = await sendBackendTestPushNotification();
+      if (res.subscription) {
+        setBackendPushSubscription(res.subscription);
+      }
+      if (res.ok) {
+        setPushFeedback(
+          `Test Web Push sent (HTTP ${res.statusCode ?? 201}) — lock your phone or check Notification Center.`
+        );
+      } else {
+        setPushFeedback(
+          res.error || 'Failed to send test push notification.'
+        );
+      }
+    } finally {
+      setPushBusy(false);
+    }
+  }, []);
 
   const handleCompleteOnboarding = useCallback(() => {
     try {
@@ -889,10 +1019,18 @@ export default function App() {
   }, [districts, zones]);
 
   const handleOnboardingRequestNotifications = useCallback(async () => {
-    const perm = await reminderAdapterRef.current.requestPermission();
+    // Runs synchronous Notification.requestPermission() first, then completes PushManager subscription & backend registration
+    const res = await enableBackgroundPushNotifications({
+      districtId: selectedDistrict.id,
+      perPrayerEnabled: preferences.perPrayerEnabled,
+      advanceMinutes: preferences.advanceMinutes,
+    });
     setCapabilities(reminderAdapterRef.current.getCapabilities());
-    return perm;
-  }, []);
+    if (res.ok && res.subscription) {
+      setBackendPushSubscription(res.subscription);
+    }
+    return res.permission;
+  }, [selectedDistrict.id, preferences.perPrayerEnabled, preferences.advanceMinutes]);
 
   const handleOnboardingUnlockAudio = useCallback(async () => {
     const ok = await unlockAudioForSession(selectedBuiltinTrack);
@@ -1080,9 +1218,14 @@ export default function App() {
                   hasVerifiedToday={Boolean(todaySchedule.isVerified && todaySchedule.times)}
                   selectedDistrict={selectedDistrict}
                   selectedZone={selectedZone}
+                  backendPushSubscription={backendPushSubscription}
+                  pushBusy={pushBusy}
+                  pushFeedback={pushFeedback}
                   onUpdatePreferences={updatePreferences}
-                  onRequestNotificationPermission={handleRequestNotificationPermission}
-                  onSendTestNotification={handleSendTestNotification}
+                  onEnableBackgroundPush={handleEnableBackgroundPush}
+                  onDisableBackgroundPush={handleDisableBackgroundPush}
+                  onSendBackgroundTestPush={handleSendBackgroundTestPush}
+                  onOpenDiagnostics={() => setActiveTab('diagnostics')}
                 />
               )}
 
@@ -1093,6 +1236,17 @@ export default function App() {
                   selectedZone={selectedZone}
                   preferences={preferences}
                   onUpdatePreferences={updatePreferences}
+                  onOpenDiagnostics={() => setActiveTab('diagnostics')}
+                />
+              )}
+
+              {activeTab === 'diagnostics' && (
+                <PushDiagnosticsView
+                  selectedDistrict={selectedDistrict}
+                  selectedZone={selectedZone}
+                  preferences={preferences}
+                  onBack={() => setActiveTab('audio')}
+                  onPushStatusUpdated={() => void refreshBackendPushStatus()}
                 />
               )}
             </motion.div>

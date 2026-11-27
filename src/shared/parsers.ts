@@ -1,5 +1,5 @@
-import { isLeapYear, validateTimetableRows } from './timetablePolicy';
-import type { PrayerTimesRow, ValidationIssue } from './types';
+import { isLeapYear, validateTimetableRows } from './timetablePolicy.ts';
+import type { PrayerTimesRow, ValidationIssue } from './types.ts';
 
 export interface ParseResult {
   rows: PrayerTimesRow[];

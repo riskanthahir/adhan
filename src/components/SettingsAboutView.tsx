@@ -9,6 +9,7 @@ interface SettingsAboutViewProps {
   selectedZone: AcjuZone;
   preferences: UserPreferences;
   onUpdatePreferences: (patch: Partial<UserPreferences>) => void;
+  onOpenDiagnostics: () => void;
 }
 
 export const SettingsAboutView: React.FC<SettingsAboutViewProps> = ({
@@ -17,6 +18,7 @@ export const SettingsAboutView: React.FC<SettingsAboutViewProps> = ({
   selectedZone,
   preferences,
   onUpdatePreferences,
+  onOpenDiagnostics,
 }) => {
   return (
     <div className="grid gap-6 lg:grid-cols-12">
@@ -74,6 +76,19 @@ export const SettingsAboutView: React.FC<SettingsAboutViewProps> = ({
               Install Progressive Web App
             </p>
             <PWAInstallButton />
+          </div>
+
+          <div className="pt-1">
+            <p className="mb-2 text-sm font-medium text-slate-900 dark:text-slate-100">
+              Background Web Push Diagnostics
+            </p>
+            <button
+              type="button"
+              onClick={onOpenDiagnostics}
+              className="min-h-[42px] rounded-xl border border-stone-300 bg-stone-50 px-4 text-xs font-semibold text-slate-800 hover:bg-stone-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+            >
+              Open Push &amp; iOS Diagnostic Console
+            </button>
           </div>
 
           <div className="pt-1">

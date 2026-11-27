@@ -1,14 +1,12 @@
-import {createRoot} from 'react-dom/client';
+import { createRoot } from 'react-dom/client';
+import { registerSW } from 'virtual:pwa-register';
 import App from './App.tsx';
 import './index.css';
 
-if (import.meta.env.DEV && 'serviceWorker' in navigator) {
-  navigator.serviceWorker.getRegistrations().then((registrations) => {
-    for (const reg of registrations) {
-      if (reg.active?.scriptURL.includes('dev-sw')) {
-        void reg.unregister();
-      }
-    }
+// Register our custom Service Worker (src/sw.ts) for offline caching and iOS/Web Push delivery
+if ('serviceWorker' in navigator) {
+  registerSW({
+    immediate: true,
   });
 }
 

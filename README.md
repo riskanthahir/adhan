@@ -1,43 +1,37 @@
 # My Adhan — Sri Lanka Prayer Times PWA
 
-**My Adhan** is a standalone, offline-ready Progressive Web App (PWA) for Sri Lanka built with React, TypeScript, Vite, and Tailwind CSS. It runs 100% client-side with **no database or backend required** and embeds the complete official **2026 All-Ceylon Jamiyyathul Ulama (ACJU)** prayer timetable across all 13 geographical groups (`4,745` daily records).
+**My Adhan** is a full-stack, offline-ready Progressive Web App (PWA) for Sri Lanka built with React, TypeScript, Vite, Tailwind CSS, Express, and SQLite (`node:sqlite`). It embeds the complete official **2026 All-Ceylon Jamiyyathul Ulama (ACJU)** prayer timetable across all 13 geographical groups (`4,745` daily records) and includes a **server-side Web Push notification engine** compatible with installed **iOS 16.4+ Home Screen PWAs**, Android, and desktop browsers.
 
 ---
 
 ## Key Features
 
-- **Complete Embedded Official 2026 ACJU Timetable:** All 5 daily prayers (`Fajr`, `Dhuhr`, `Asr`, `Maghrib`, `Isha`) for all 13 Sri Lankan ACJU geographical groups are bundled directly in the app (`src/shared/acju2026Timetable.ts`).
-- **Annual Repeat Policy (2027+):** Future years automatically match `(month, day)` against the 2026 ACJU reference dataset and clearly label entries as annual repeats.
-- **Safe Leap-Year February 29 Policy:** Because 2026 is not a leap year, 29 February is never silently invented or copied from 28 February; reminders pause on that date.
-- **13 ACJU Groups & GPS Detection:** On-demand GPS boundary detection plus manual search/picker for all Sri Lankan districts and overrides (`Gampola` → Group 7, `Nallur` → Group 2, `Mullaitivu` → Group 3, `Padiyatalawa` / `Dehiaththekandiya` → Group 10).
-- **Adhan Audio & Reminders:** Includes the default Adhan alarm tone (`/assets/aistudio/Adhan_a222d363.mp3`), a synthesized harmonic chime, and private IndexedDB local audio file upload. Fixed to `Asia/Colombo` (`UTC+05:30`).
+- **Complete Embedded Official 2026 ACJU Timetable:** All 5 daily prayers (`Fajr`, `Dhuhr`, `Asr`, `Maghrib`, `Isha`) plus daily `Sunrise` for all 13 Sri Lankan ACJU geographical groups (`src/shared/acju2026Timetable.ts`).
+- **Background Web Push Notifications (iOS 16.4+ APNs & Android FCM):** Server-side Node scheduler (`server/scheduler.ts`) runs independently every 15 seconds in `Asia/Colombo` time, dispatches encrypted VAPID Web Push messages (`web-push`) for each user's district & per-prayer preferences (including configurable `0 / 5 / 10 / 15 / 30` minute lead reminders), deduplicates by unique `event_key`, retries transient errors, and cleans up `410 Gone` subscriptions.
+- **Custom Service Worker (`src/sw.ts`):** Handles Workbox offline precaching plus mandatory Apple-compliant `showNotification()`, `notificationclick` opening/verification, and `pushsubscriptionchange` automatic key renewal.
+- **Push Diagnostics Console (`PushDiagnosticsView`):** Verifies HTTPS, Service Worker registration/ping, `Notification.permission`, `PushManager`, subscription persistence, VAPID config, test push delivery, click verification, and `410` cleanup.
+- **Annual Repeat & Feb 29 Safety Policy:** Future years match `(month, day)` cleanly against 2026 ACJU data; Feb 29 is never silently invented.
+- **Manual Adhan Audio & Lock Screen Calendar Sync:** Keeps full Makkah Adhan `.mp3`, harmonic chime, and local MP3 playback inside the app cleanly separated from iOS system-sound background Web Push notifications, alongside one-tap `.ics` iPhone Lock Screen calendar export.
 
 ---
 
-## Local Development
+## Local Development & Production Commands
 
 ```bash
 npm install
-npm run dev      # Starts Vite on http://localhost:3000
-npm test         # Runs Vitest unit tests
-npm run lint     # Runs TypeScript type-checking
-npm run build    # Builds static production bundle to dist/
+cp .env.example .env   # Optional; auto-generates persistent VAPID keys in SQLite if omitted
+
+npm run dev            # Starts Express + Vite middleware on http://localhost:3000
+npm test               # Runs all Vitest suites (ACJU timetable + Web Push backend/scheduler)
+npm run lint           # Runs TypeScript type-checking (tsc --noEmit)
+npm run build          # Builds production client bundle + custom sw.js into dist/
+npm start              # Runs production server (NODE_ENV=production node server.ts)
 ```
 
 ---
 
-## Deploying to Vercel (Zero Configuration)
+## Documentation
 
-1. Push this repository to GitHub, GitLab, or Bitbucket.
-2. Import the repository in **Vercel** (`vercel.com/new`).
-3. Vercel automatically uses `vercel.json` (`vite` framework preset, `npm run build`, output directory `dist`, no environment variables needed).
-4. Click **Deploy** — you immediately get an HTTPS URL ready for iPhone and Android installation.
+Full instructions for database schema & migrations, VAPID key generation, `.env` variables, HTTPS server deployment, iPhone Home Screen installation, iOS audio limitations, and physical iPhone A–G verification scenarios are in:
 
----
-
-## Installing & Testing on iPhone (Safari over HTTPS)
-
-1. Open your Vercel HTTPS URL in **Safari** on iPhone.
-2. Tap the **Share** button → **Add to Home Screen** → **Add**.
-3. Open **My Adhan** from your Home Screen icon (required on iOS 16.4+ to unlock Web Notifications).
-4. Note: iOS does not allow full Adhan audio playback when the PWA is closed or backgrounded; tap **Test Adhan / Chime** inside the app to verify audio playback and ensure your iPhone silent switch is off.
+👉 **[docs/IOS_WEB_PUSH_SETUP.md](./docs/IOS_WEB_PUSH_SETUP.md)**

@@ -21,6 +21,7 @@ import {
   stopAdhanPlayback,
   unlockAudioForSession,
 } from '../lib/audioEngine';
+import type { BackendSubscriptionSummary } from '../lib/webPushClient';
 import { LockScreenSyncCard } from './LockScreenSyncCard';
 import type { AdapterCapabilities, ScheduledReminderSummary } from '../lib/reminders';
 import { PRAYER_LABELS, PRAYER_NAMES } from '../shared/types';
@@ -41,9 +42,14 @@ interface AudioRemindersViewProps {
   hasVerifiedToday: boolean;
   selectedDistrict: AcjuDistrict;
   selectedZone: AcjuZone;
+  backendPushSubscription: BackendSubscriptionSummary | null;
+  pushBusy: boolean;
+  pushFeedback: string | null;
   onUpdatePreferences: (patch: Partial<UserPreferences>) => void;
-  onRequestNotificationPermission: () => Promise<void>;
-  onSendTestNotification: () => Promise<boolean>;
+  onEnableBackgroundPush: () => Promise<void>;
+  onDisableBackgroundPush: () => Promise<void>;
+  onSendBackgroundTestPush: () => Promise<void>;
+  onOpenDiagnostics: () => void;
 }
 
 const ADVANCE_OPTIONS: AdvanceMinutesOption[] = [0, 5, 10, 15, 30];
@@ -63,14 +69,18 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
   hasVerifiedToday,
   selectedDistrict,
   selectedZone,
+  backendPushSubscription,
+  pushBusy,
+  pushFeedback,
   onUpdatePreferences,
-  onRequestNotificationPermission,
-  onSendTestNotification,
+  onEnableBackgroundPush,
+  onDisableBackgroundPush,
+  onSendBackgroundTestPush,
+  onOpenDiagnostics,
 }) => {
   const [localTracks, setLocalTracks] = useState<AdhanAudioTrack[]>([]);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [audioMessage, setAudioMessage] = useState<string | null>(null);
-  const [notifFeedback, setNotifFeedback] = useState<string | null>(null);
   const [showIosDetails, setShowIosDetails] = useState(false);
 
   useEffect(() => {
@@ -157,12 +167,29 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
 
   const permissionLabel =
     capabilities.permissionState === 'granted'
-      ? 'Allowed'
+      ? 'Granted'
       : capabilities.permissionState === 'denied'
-      ? 'Blocked'
+      ? 'Denied'
       : capabilities.permissionState === 'unsupported'
       ? 'Unsupported'
-      : 'Not enabled';
+      : 'Not requested (default)';
+
+  const subscriptionStatusLabel =
+    backendPushSubscription?.status === 'active'
+      ? 'Active (Background Web Push)'
+      : backendPushSubscription?.status === 'disabled'
+      ? 'Disabled'
+      : backendPushSubscription?.status === 'expired'
+      ? 'Expired — tap Enable to renew'
+      : backendPushSubscription?.status === 'invalid'
+      ? 'Invalid — tap Enable to renew'
+      : 'Not Subscribed';
+
+  const formatTimestamp = (iso: string | null | undefined) => {
+    if (!iso) return 'Not registered yet';
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+  };
 
   return (
     <div className="grid gap-4 sm:gap-6 lg:grid-cols-12 lg:items-start">
@@ -449,21 +476,21 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
         transition={{ duration: 0.3, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
         className="lg:col-span-6 space-y-4 sm:space-y-5 rounded-3xl border border-stone-200 bg-white p-4 sm:p-6 dark:border-slate-800 dark:bg-slate-900"
       >
-        {/* Header + Permission Status */}
-        <div className="space-y-3">
+        {/* Header + Background Web Push Controls & Status */}
+        <div className="space-y-3.5">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="text-lg sm:text-xl font-semibold text-slate-900 dark:text-slate-50">
-                Prayer Reminders
+                Background Push &amp; Prayer Reminders
               </h2>
               <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                Notifications: <span className="font-medium text-slate-700 dark:text-slate-200">{permissionLabel}</span>
+                Server-scheduled iOS Home Screen &amp; Web Push alerts (works when closed or locked)
               </p>
             </div>
             <span
               aria-hidden="true"
-              className={`h-2.5 w-2.5 rounded-full ${
-                capabilities.permissionState === 'granted'
+              className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+                backendPushSubscription?.status === 'active'
                   ? 'bg-emerald-500'
                   : capabilities.permissionState === 'denied'
                   ? 'bg-rose-500'
@@ -472,62 +499,97 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-2.5">
+          {/* Primary Push Actions */}
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             <motion.button
               whileTap={{ scale: 0.97 }}
               type="button"
-              onClick={async () => {
-                const permPromise = onRequestNotificationPermission();
-                void unlockAudioForSession();
-                await permPromise;
-                if (capabilities.isIOS && !capabilities.isStandalonePwa) {
-                  setNotifFeedback(
-                    'On iPhone, add this app to your Home Screen (Share → Add to Home Screen) to enable iOS notifications.'
-                  );
-                }
-              }}
-              className="min-h-[44px] rounded-2xl bg-emerald-800 px-3.5 py-2 text-xs font-medium text-white transition-colors hover:bg-emerald-900 dark:bg-emerald-700 dark:hover:bg-emerald-600"
+              disabled={pushBusy}
+              onClick={() => void onEnableBackgroundPush()}
+              className="min-h-[44px] rounded-2xl bg-emerald-800 px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-emerald-900 disabled:opacity-55 dark:bg-emerald-700 dark:hover:bg-emerald-600"
             >
-              Enable Notifications
+              {pushBusy
+                ? 'Working…'
+                : backendPushSubscription?.status === 'active'
+                ? 'Renew Push Subscription'
+                : 'Enable Prayer Notifications'}
             </motion.button>
+
             <motion.button
               whileTap={{ scale: 0.97 }}
               type="button"
-              onClick={async () => {
-                const sendPromise = onSendTestNotification();
-                void unlockAudioForSession();
-                const sent = await sendPromise;
-                if (sent) {
-                  setNotifFeedback('Test notification sent — check your device notification tray.');
-                } else if (capabilities.isIOS && !capabilities.isStandalonePwa) {
-                  setNotifFeedback(
-                    'iPhone Safari tabs hide Web Notifications. Tap Share → Add to Home Screen first, or use Apple Calendar sync below.'
-                  );
-                } else {
-                  setNotifFeedback(
-                    'Notification permission is blocked or unsupported. Enable it in browser settings or use Apple Calendar sync below.'
-                  );
-                }
-              }}
-              className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-2xl border border-stone-300 bg-stone-50 px-3.5 py-2 text-xs font-medium text-slate-800 transition-colors hover:bg-stone-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+              disabled={pushBusy || backendPushSubscription?.status !== 'active'}
+              onClick={() => void onSendBackgroundTestPush()}
+              className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-2xl border border-stone-300 bg-stone-50 px-3.5 py-2 text-xs font-medium text-slate-800 transition-colors hover:bg-stone-100 disabled:opacity-45 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
             >
               <Bell className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
-              <span>Test Alert</span>
+              <span>Send Test Notification</span>
+            </motion.button>
+
+            <motion.button
+              whileTap={{ scale: 0.97 }}
+              type="button"
+              disabled={pushBusy || !backendPushSubscription || backendPushSubscription.status === 'disabled'}
+              onClick={() => void onDisableBackgroundPush()}
+              className="min-h-[44px] rounded-2xl border border-stone-300 bg-white px-3.5 py-2 text-xs font-medium text-rose-700 transition-colors hover:bg-rose-50 disabled:opacity-45 dark:border-slate-700 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-rose-950/30"
+            >
+              Disable Notifications
             </motion.button>
           </div>
 
           <AnimatePresence>
-            {notifFeedback && (
+            {pushFeedback && (
               <motion.p
                 initial={{ opacity: 0, y: 4 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
-                className="text-xs text-emerald-800 dark:text-emerald-300"
+                className="rounded-xl bg-emerald-50/80 px-3 py-2 text-xs text-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200"
               >
-                {notifFeedback}
+                {pushFeedback}
               </motion.p>
             )}
           </AnimatePresence>
+
+          {/* Subscription Telemetry Box */}
+          <dl className="space-y-1.5 rounded-2xl border border-stone-200 bg-stone-50/80 p-3 text-xs dark:border-slate-800 dark:bg-slate-950/60">
+            <div className="flex items-center justify-between gap-2">
+              <dt className="text-slate-500 dark:text-slate-400">Subscription Status</dt>
+              <dd className="font-semibold text-slate-900 dark:text-slate-100">
+                {subscriptionStatusLabel}
+              </dd>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <dt className="text-slate-500 dark:text-slate-400">Permission Status</dt>
+              <dd className="font-medium text-slate-800 dark:text-slate-200">{permissionLabel}</dd>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <dt className="text-slate-500 dark:text-slate-400">Last Registered</dt>
+              <dd className="font-mono-tabular text-[11px] text-slate-700 dark:text-slate-300">
+                {formatTimestamp(backendPushSubscription?.lastRegisteredAt)}
+              </dd>
+            </div>
+            <div className="flex items-start justify-between gap-2">
+              <dt className="shrink-0 text-slate-500 dark:text-slate-400">Last Delivery Error</dt>
+              <dd className="text-right text-[11px] text-rose-700 dark:text-rose-300 break-words">
+                {backendPushSubscription?.lastDeliveryError ?? 'None'}
+              </dd>
+            </div>
+          </dl>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-slate-500 dark:text-slate-400">
+              {backendPushSubscription?.nextScheduledPrayer
+                ? `Server next: ${backendPushSubscription.nextScheduledPrayer.label} (${backendPushSubscription.nextScheduledPrayer.timeHHMM})`
+                : `District: ${selectedDistrict.name} · ${selectedZone.name}`}
+            </span>
+            <button
+              type="button"
+              onClick={onOpenDiagnostics}
+              className="text-xs font-semibold text-emerald-800 underline underline-offset-2 hover:text-emerald-900 dark:text-emerald-300"
+            >
+              Open Push Diagnostics
+            </button>
+          </div>
         </div>
 
         {!hasVerifiedToday && (
@@ -651,10 +713,10 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
               >
                 <div className="space-y-2 border-t border-stone-200 px-4 py-3 text-xs leading-relaxed text-slate-600 dark:border-slate-800 dark:text-slate-400">
                   <p>
-                    {capabilities.notes} Browser Adhan playback runs automatically when the app is open and you have tapped anywhere in the session.
+                    <strong>Background Web Push (Closed / Locked iPhone):</strong> On iOS 16.4+ installed Home Screen apps, server-scheduled Web Push displays a standard iPhone Lock Screen &amp; Notification Center banner with the standard iOS notification sound.
                   </p>
                   <p>
-                    For custom 3-minute Adhan sound or a dedicated multi-row iOS Lock Screen widget when fully closed, a native App Store shell with <code className="font-mono-tabular">WidgetKit</code> &amp; <code className="font-mono-tabular">AlarmKit</code> is required — meanwhile, Apple Calendar sync above adds upcoming prayers to your iPhone Lock Screen right away.
+                    <strong>Adhan Audio Playback (Manual / Open App):</strong> Apple iOS does not allow Web Push notifications to trigger custom 3-minute MP3 Adhan audio while the iPhone is locked or the app is closed. Manual Adhan playback and in-app alarm tones play whenever the app is open on screen.
                   </p>
                 </div>
               </motion.div>

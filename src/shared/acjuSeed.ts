@@ -1,4 +1,4 @@
-import type { AcjuDistrict, AcjuZone, ReferencePrayerRecord } from './types';
+import type { AcjuDistrict, AcjuZone, ReferencePrayerRecord } from './types.ts';
 
 export const ACJU_ZONES: readonly AcjuZone[] = [
   { id: 1, zoneCode: 'ZONE_01', name: 'Zone 1 — Western Coast', officialDescription: 'Colombo, Gampaha, Kalutara' },

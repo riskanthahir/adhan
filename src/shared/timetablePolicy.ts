@@ -7,7 +7,7 @@ import {
   type ReferencePrayerRecord,
   type ResolvedDaySchedule,
   type ValidationIssue,
-} from './types';
+} from './types.ts';
 
 export const SRI_LANKA_TIMEZONE = 'Asia/Colombo';
 export const BASE_REFERENCE_YEAR = 2026;

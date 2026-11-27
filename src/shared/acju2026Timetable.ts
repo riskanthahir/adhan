@@ -1,5 +1,5 @@
-import { resolveScheduleForDate } from './timetablePolicy';
-import type { ReferencePrayerRecord, ResolvedDaySchedule } from './types';
+import { resolveScheduleForDate } from './timetablePolicy.ts';
+import type { ReferencePrayerRecord, ResolvedDaySchedule } from './types.ts';
 
 /**
  * Complete embedded Official 2026 ACJU (All-Ceylon Jamiyyathul Ulama) Sri Lanka

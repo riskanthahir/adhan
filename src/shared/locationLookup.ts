@@ -1,5 +1,5 @@
-import { ACJU_DISTRICTS, ACJU_ZONES } from './acjuSeed';
-import type { AcjuDistrict, AcjuZone, LocationResolution } from './types';
+import { ACJU_DISTRICTS, ACJU_ZONES } from './acjuSeed.ts';
+import type { AcjuDistrict, AcjuZone, LocationResolution } from './types.ts';
 
 // Approximate geographic bounding box for Sri Lanka
 const SRI_LANKA_BOUNDS = {
