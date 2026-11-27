@@ -15,14 +15,9 @@ export default defineConfig(() => {
         srcDir: 'src',
         filename: 'sw.ts',
         registerType: 'autoUpdate',
-        includeAssets: [
-          'icon.svg',
-          'apple-touch-icon.png',
-          'pwa-192x192.png',
-          'pwa-512x512.png',
-          'pwa-maskable-512x512.png',
-          'assets/aistudio/Adhan_a222d363.mp3',
-        ],
+        // public/ assets matching globPatterns are already copied to dist/ and precached once.
+        // Keeping includeAssets empty prevents Workbox `add-to-cache-list-conflicting-entries`.
+        includeAssets: [],
         manifest: {
           id: '/',
           name: 'My Adhan — Sri Lanka Prayer Times',
@@ -56,8 +51,9 @@ export default defineConfig(() => {
           ],
         },
         injectManifest: {
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,mp3}'],
-          maximumFileSizeToCacheInBytes: 12 * 1024 * 1024,
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+          globIgnores: ['**/*.mp3', 'pwa-*.png'],
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         },
         devOptions: {
           enabled: true,

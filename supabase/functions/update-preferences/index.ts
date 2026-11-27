@@ -20,6 +20,8 @@ Deno.serve(async (req: Request) => {
     return jsonResponse(req, { error: 'Method not allowed.' }, 405);
   }
 
+  try {
+
   let body: Record<string, unknown> = {};
   try {
     body = (await req.json()) as Record<string, unknown>;
@@ -94,6 +96,10 @@ Deno.serve(async (req: Request) => {
     .update({ last_verified_at: nowIso })
     .eq('device_uuid', dev.id);
 
-  const summary = await buildSubscriptionSummary(supabase, deviceId);
-  return jsonResponse(req, { ok: true, subscription: summary });
+    const summary = await buildSubscriptionSummary(supabase, deviceId);
+    return jsonResponse(req, { ok: true, subscription: summary });
+  } catch (err) {
+    console.error('[update-preferences] Unhandled error:', err instanceof Error ? err.message : String(err));
+    return jsonResponse(req, { ok: false, error: 'Failed to update notification preferences.' }, 500);
+  }
 });

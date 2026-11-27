@@ -1,10 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
+  AlertCircle,
   Bell,
   Check,
+  CheckCircle2,
   ChevronDown,
   Info,
+  Loader2,
   Music,
   Play,
   Square,
@@ -38,6 +41,13 @@ import type {
   UserPreferences,
 } from '../shared/types';
 
+export interface PushActionFeedback {
+  tone: 'working' | 'success' | 'error';
+  stage?: string;
+  message: string;
+  technicalDetail?: string;
+}
+
 interface AudioRemindersViewProps {
   serverTracks: AdhanAudioTrack[];
   preferences: UserPreferences;
@@ -48,7 +58,7 @@ interface AudioRemindersViewProps {
   selectedZone: AcjuZone;
   backendPushSubscription: BackendSubscriptionSummary | null;
   pushBusy: boolean;
-  pushFeedback: string | null;
+  pushFeedback: PushActionFeedback | null;
   onUpdatePreferences: (patch: Partial<UserPreferences>) => void;
   onEnableBackgroundPush: () => Promise<void>;
   onDisableBackgroundPush: () => Promise<void>;
@@ -561,14 +571,51 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
 
           <AnimatePresence>
             {pushFeedback && (
-              <motion.p
+              <motion.div
+                role={pushFeedback.tone === 'error' ? 'alert' : 'status'}
                 initial={{ opacity: 0, y: 4 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
-                className="rounded-xl bg-emerald-50/80 px-3 py-2 text-xs text-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200"
+                className={`rounded-2xl border px-3.5 py-2.5 text-xs ${
+                  pushFeedback.tone === 'error'
+                    ? 'border-rose-300 bg-rose-50/90 text-rose-950 dark:border-rose-800/70 dark:bg-rose-950/40 dark:text-rose-100'
+                    : pushFeedback.tone === 'working'
+                    ? 'border-amber-200 bg-amber-50/80 text-amber-950 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-100'
+                    : 'border-emerald-200 bg-emerald-50/80 text-emerald-950 dark:border-emerald-800/60 dark:bg-emerald-950/40 dark:text-emerald-100'
+                }`}
               >
-                {pushFeedback}
-              </motion.p>
+                <div className="flex items-start gap-2">
+                  {pushFeedback.tone === 'error' ? (
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-700 dark:text-rose-300" aria-hidden="true" />
+                  ) : pushFeedback.tone === 'working' ? (
+                    <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-amber-700 dark:text-amber-300" aria-hidden="true" />
+                  ) : (
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-300" aria-hidden="true" />
+                  )}
+                  <div className="min-w-0 flex-1 space-y-1">
+                    {pushFeedback.tone === 'error' && pushFeedback.stage && (
+                      <p className="font-semibold">Failed at stage: {pushFeedback.stage}</p>
+                    )}
+                    <p className="leading-relaxed break-words">{pushFeedback.message}</p>
+                    {pushFeedback.tone === 'error' &&
+                      pushFeedback.technicalDetail &&
+                      pushFeedback.technicalDetail !== pushFeedback.message && (
+                        <p className="font-mono-tabular text-[11px] opacity-80 break-words">
+                          Detail: {pushFeedback.technicalDetail}
+                        </p>
+                      )}
+                    {pushFeedback.tone === 'error' && (
+                      <button
+                        type="button"
+                        onClick={onOpenDiagnostics}
+                        className="mt-1 inline-flex items-center font-semibold underline underline-offset-2 hover:opacity-80"
+                      >
+                        Open Push Diagnostics →
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </motion.div>
             )}
           </AnimatePresence>
 
@@ -749,10 +796,13 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
               >
                 <div className="space-y-2 border-t border-stone-200 px-4 py-3 text-xs leading-relaxed text-slate-600 dark:border-slate-800 dark:text-slate-400">
                   <p>
-                    <strong>Background Web Push (Closed / Locked iPhone):</strong> On iOS 16.4+ installed Home Screen apps, server-scheduled Web Push displays a standard iPhone Lock Screen &amp; Notification Center banner with the standard iOS notification sound.
+                    <strong>Background Push Delivery (Closed / Locked iPhone):</strong> On iOS 16.4+ installed Home Screen apps, server-scheduled Web Push wakes the Lock Screen and Notification Center banner reliably.
                   </p>
                   <p>
-                    <strong>Adhan Audio Playback (Manual / Open App):</strong> Apple iOS does not allow Web Push notifications to trigger custom 3-minute MP3 Adhan audio while the iPhone is locked or the app is closed. Manual Adhan playback and in-app alarm tones play whenever the app is open on screen.
+                    <strong>System Notification Sound (When Locked):</strong> Background Web Push notifications play Apple&apos;s standard iOS notification chime when delivered while the app is closed or locked.
+                  </p>
+                  <p>
+                    <strong>In-App Adhan Audio (While App Is Open):</strong> Full 3-minute Adhan recordings and custom uploaded audio play inside My Adhan whenever the app is open on screen (Apple iOS prevents Web Push from playing custom audio files on a locked screen).
                   </p>
                 </div>
               </motion.div>

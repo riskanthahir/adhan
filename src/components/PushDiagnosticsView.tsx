@@ -1,27 +1,35 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
   Bell,
   CheckCircle2,
+  Clock,
   PlayCircle,
   RefreshCw,
   Server,
   ShieldCheck,
+  Terminal,
   Trash2,
   XCircle,
 } from 'lucide-react';
 import {
   PUSH_CHANNEL_NAME,
+  appendPushClientEvent,
+  clearPushClientEvents,
   disableBackgroundPushNotifications,
   enableBackgroundPushNotifications,
   ensureServiceWorkerReady,
-  fetchPushDiagnostics,
+  fetchPushDiagnosticsDetailed,
+  fetchVapidPublicKeyStatus,
   getBackendTransportMode,
+  getPushClientEvents,
   inspectPushEnvironment,
   pingServiceWorker,
   sendBackendTestPushNotification,
   triggerExpiredCleanupDiagnostic,
+  type PushClientEnvironment,
+  type PushClientLogEntry,
   type PushDiagnosticsResponse,
 } from '../lib/webPushClient';
 import { formatTime12h } from '../shared/timetablePolicy';
@@ -35,10 +43,12 @@ interface PushDiagnosticsViewProps {
   onPushStatusUpdated: () => void;
 }
 
-interface DiagnosticCheckItem {
+export type DiagnosticStatus = 'pass' | 'fail' | 'warning' | 'pending';
+
+export interface DiagnosticCheckItem {
   id: string;
   label: string;
-  status: 'pass' | 'fail' | 'warn' | 'pending';
+  status: DiagnosticStatus;
   detail: string;
 }
 
@@ -49,6 +59,188 @@ function formatTs(iso: string | null | undefined): string {
   return d.toLocaleString();
 }
 
+function safeHostname(urlStr: string | null | undefined): string {
+  if (!urlStr) return 'unknown';
+  try {
+    return new URL(urlStr).hostname || 'unknown';
+  } catch {
+    return 'redacted-endpoint';
+  }
+}
+
+export function buildInitialDiagnosticChecks(env: PushClientEnvironment): DiagnosticCheckItem[] {
+  const originLabel =
+    typeof window !== 'undefined' && window.location?.origin
+      ? window.location.origin
+      : 'Non-browser environment';
+
+  return [
+    {
+      id: 'https',
+      label: '1. HTTPS Secure Context',
+      status: env.isSecureContext ? 'pass' : 'fail',
+      detail: env.isSecureContext
+        ? originLabel
+        : 'Web Push requires an HTTPS origin (or localhost in dev).',
+    },
+    {
+      id: 'ios-device',
+      label: '2. iOS Device Detection',
+      status: 'pass',
+      detail: env.isIOS ? 'iPhone / iPadOS (WebKit)' : 'Non-iOS browser / desktop environment',
+    },
+    {
+      id: 'standalone-pwa',
+      label: '3. Standalone Home Screen PWA',
+      status: env.isIOS ? (env.isStandalonePwa ? 'pass' : 'warning') : env.isStandalonePwa ? 'pass' : 'warning',
+      detail: env.isIOS
+        ? env.isStandalonePwa
+          ? 'Opened from iPhone Home Screen icon (display-mode: standalone)'
+          : 'Safari tab detected — on iPhone 16.4+, Web Push requires Share → Add to Home Screen'
+        : env.isStandalonePwa
+        ? 'Installed standalone PWA window'
+        : 'Standard browser tab (Web Push supported on desktop/Android)',
+    },
+    {
+      id: 'permission',
+      label: '4. Notification Permission',
+      status:
+        env.permission === 'granted'
+          ? 'pass'
+          : env.permission === 'denied'
+          ? 'fail'
+          : env.permission === 'unsupported'
+          ? 'fail'
+          : 'warning',
+      detail: `Notification.permission = "${env.permission}"`,
+    },
+    {
+      id: 'sw-support',
+      label: '5. Service Worker Support',
+      status: env.serviceWorkerSupported ? 'pass' : 'fail',
+      detail: env.serviceWorkerSupported
+        ? 'navigator.serviceWorker available'
+        : 'Service Workers are unsupported in this browser context.',
+    },
+    {
+      id: 'sw-registration',
+      label: '6. Service Worker Registration',
+      status: env.serviceWorkerSupported ? 'pending' : 'fail',
+      detail: env.serviceWorkerSupported ? 'Checking registration…' : 'Skipped (SW unsupported)',
+    },
+    {
+      id: 'sw-activation',
+      label: '7. Service Worker Activation',
+      status: env.serviceWorkerSupported ? 'pending' : 'fail',
+      detail: env.serviceWorkerSupported ? 'Checking active state…' : 'Skipped (SW unsupported)',
+    },
+    {
+      id: 'sw-ping',
+      label: '8. Service Worker Communication (SW_PING)',
+      status: env.serviceWorkerSupported ? 'pending' : 'fail',
+      detail: env.serviceWorkerSupported ? 'Pinging active Service Worker…' : 'Skipped (SW unsupported)',
+    },
+    {
+      id: 'pushmanager',
+      label: '9. PushManager Availability',
+      status: env.pushManagerSupported ? 'pass' : 'fail',
+      detail: env.pushManagerSupported
+        ? 'window.PushManager available'
+        : env.isIOS && !env.isStandalonePwa
+        ? 'Unavailable in Safari browser tab — open installed Home Screen app icon'
+        : 'PushManager API is unavailable.',
+    },
+    {
+      id: 'browser-sub',
+      label: '10. Existing Browser PushSubscription',
+      status: env.pushManagerSupported && env.serviceWorkerSupported ? 'pending' : 'fail',
+      detail:
+        env.pushManagerSupported && env.serviceWorkerSupported
+          ? 'Inspecting PushManager.getSubscription()…'
+          : 'Unavailable without Service Worker + PushManager.',
+    },
+    {
+      id: 'vapid-endpoint',
+      label: '11. VAPID Public-Key Endpoint',
+      status: 'pending',
+      detail: 'Querying backend VAPID public key endpoint…',
+    },
+    {
+      id: 'vapid-compat',
+      label: '12. VAPID Public / Private Key Compatibility',
+      status: 'pending',
+      detail: 'Verifying server VAPID key pair validation…',
+    },
+    {
+      id: 'backend-reachability',
+      label: '13. Backend Reachability',
+      status: 'pending',
+      detail: `Contacting ${getBackendTransportMode()} push backend…`,
+    },
+    {
+      id: 'edge-function-response',
+      label: '14. Supabase Edge Function Response',
+      status: 'pending',
+      detail: 'Waiting for backend diagnostics payload…',
+    },
+    {
+      id: 'device-registration',
+      label: '15. Device Registration (devices)',
+      status: 'pending',
+      detail: 'Checking registered device record…',
+    },
+    {
+      id: 'push-sub-persistence',
+      label: '16. Push Subscription Persistence (push_subscriptions)',
+      status: 'pending',
+      detail: 'Checking persisted encrypted subscription…',
+    },
+    {
+      id: 'backend-verification',
+      label: '17. Backend Registration Verification',
+      status: 'pending',
+      detail: 'Verifying active subscription binding…',
+    },
+    {
+      id: 'cron-scheduler',
+      label: '18. Cron Scheduler Status',
+      status: 'pending',
+      detail: 'Checking backend prayer scheduler status…',
+    },
+    {
+      id: 'prayer-dispatch',
+      label: '19. Prayer-Time Dispatch Readiness',
+      status: 'pending',
+      detail: 'Checking ACJU schedule & next due prayer…',
+    },
+    {
+      id: 'last-push-delivery',
+      label: '20. Last Successful Push Delivery',
+      status: 'pending',
+      detail: 'Checking delivery logs…',
+    },
+    {
+      id: 'last-notification-click',
+      label: '21. Last Notification Click Verification',
+      status: 'pending',
+      detail: 'Checking notification tap tracking…',
+    },
+  ];
+}
+
+function statusBadgeLabel(status: DiagnosticStatus): string {
+  switch (status) {
+    case 'pass':
+      return 'PASS';
+    case 'fail':
+      return 'FAIL';
+    case 'warning':
+      return 'WARNING';
+    case 'pending':
+      return 'PENDING';
+  }
+}
+
 export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
   selectedDistrict,
   selectedZone,
@@ -57,186 +249,303 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
   onPushStatusUpdated,
 }) => {
   const [diag, setDiag] = useState<PushDiagnosticsResponse | null>(null);
-  const [checks, setChecks] = useState<DiagnosticCheckItem[]>([]);
+  const [backendError, setBackendError] = useState<string | null>(null);
+  const [checks, setChecks] = useState<DiagnosticCheckItem[]>(() =>
+    buildInitialDiagnosticChecks(inspectPushEnvironment())
+  );
+  const [runningDiagnostics, setRunningDiagnostics] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [actionFeedback, setActionFeedback] = useState<string | null>(null);
+  const [actionFeedback, setActionFeedback] = useState<{
+    tone: 'success' | 'error';
+    message: string;
+  } | null>(null);
+  const [clientLogs, setClientLogs] = useState<PushClientLogEntry[]>(() => getPushClientEvents());
   const [liveEvents, setLiveEvents] = useState<
     Array<{ type: string; detail: string; at: string }>
   >([]);
 
+  const runSeqRef = useRef(0);
+
+  const patchCheck = useCallback(
+    (seq: number, id: string, status: DiagnosticStatus, detail: string) => {
+      if (runSeqRef.current !== seq) return;
+      setChecks((prev) =>
+        prev.map((item) => (item.id === id ? { ...item, status, detail } : item))
+      );
+    },
+    []
+  );
+
   const runLiveChecks = useCallback(async () => {
+    const seq = ++runSeqRef.current;
+    setRunningDiagnostics(true);
+    setBackendError(null);
+
     const env = inspectPushEnvironment();
-    const list: DiagnosticCheckItem[] = [];
-
-    list.push({
-      id: 'https',
-      label: 'HTTPS Secure Context',
-      status: env.isSecureContext ? 'pass' : 'fail',
-      detail: env.isSecureContext
-        ? window.location.origin
-        : 'Web Push requires HTTPS.',
-    });
-
-    list.push({
-      id: 'sw-support',
-      label: 'Service Worker Support & Registration',
-      status: 'pending',
-      detail: 'Checking…',
-    });
+    setChecks(buildInitialDiagnosticChecks(env));
+    setClientLogs(getPushClientEvents());
 
     let swReg: ServiceWorkerRegistration | null = null;
+
     if (env.serviceWorkerSupported) {
       try {
-        swReg = await ensureServiceWorkerReady(5000);
-        const ping = await pingServiceWorker();
-        list[list.length - 1] = {
-          id: 'sw-support',
-          label: 'Service Worker Registration & Ping',
-          status: ping.ok ? 'pass' : 'warn',
-          detail: ping.ok
-            ? `Active (${ping.swVersion}) · scope ${swReg.scope}`
-            : `Registered (${swReg.active?.state ?? 'pending'})`,
-        };
+        swReg = await ensureServiceWorkerReady(6000);
+        const scope = swReg.scope || '/';
+        patchCheck(seq, 'sw-registration', 'pass', `Registered (scope: ${scope})`);
+
+        const activeState = swReg.active?.state ?? swReg.waiting?.state ?? swReg.installing?.state ?? 'unknown';
+        patchCheck(
+          seq,
+          'sw-activation',
+          swReg.active ? 'pass' : 'warning',
+          swReg.active ? `Active (${activeState})` : `Not yet activated (state: ${activeState})`
+        );
       } catch (err) {
-        list[list.length - 1] = {
-          id: 'sw-support',
-          label: 'Service Worker Registration',
-          status: 'fail',
-          detail: (err as Error).message,
-        };
+        const msg = err instanceof Error ? err.message : String(err);
+        patchCheck(seq, 'sw-registration', 'fail', msg);
+        patchCheck(seq, 'sw-activation', 'fail', 'Service Worker failed to activate.');
+        patchCheck(seq, 'sw-ping', 'fail', 'Cannot ping without an active Service Worker.');
       }
-    } else {
-      list[list.length - 1] = {
-        id: 'sw-support',
-        label: 'Service Worker Registration',
-        status: 'fail',
-        detail: 'Not supported in this browser.',
-      };
+
+      if (swReg?.active) {
+        try {
+          const ping = await pingServiceWorker();
+          if (ping.ok) {
+            patchCheck(
+              seq,
+              'sw-ping',
+              'pass',
+              `Responded (${ping.swVersion ?? 'sw'}) · precache entries: ${ping.precacheCount ?? 'n/a'}`
+            );
+          } else {
+            patchCheck(
+              seq,
+              'sw-ping',
+              'warning',
+              ping.error || 'No SW_PING reply within 2s.'
+            );
+          }
+        } catch (err) {
+          patchCheck(
+            seq,
+            'sw-ping',
+            'fail',
+            err instanceof Error ? err.message : String(err)
+          );
+        }
+      }
     }
 
-    list.push({
-      id: 'permission',
-      label: 'Notification Permission',
-      status:
-        env.permission === 'granted'
-          ? 'pass'
-          : env.permission === 'denied'
-          ? 'fail'
-          : 'warn',
-      detail:
-        env.isIOS && !env.isStandalonePwa
-          ? `${env.permission} (On iPhone, open from Home Screen icon for Web Push)`
-          : `State: ${env.permission}`,
-    });
-
-    list.push({
-      id: 'pushmanager',
-      label: 'PushManager Availability',
-      status: env.pushManagerSupported ? 'pass' : 'fail',
-      detail: env.pushManagerSupported
-        ? env.isIOS
-          ? env.isStandalonePwa
-            ? 'Available in iOS Home Screen PWA'
-            : 'Requires Home Screen installation on iPhone'
-          : 'PushManager API available'
-        : 'Unavailable in current browser tab',
-    });
-
-    let browserSub: PushSubscription | null = null;
     if (swReg?.pushManager) {
       try {
-        browserSub = await swReg.pushManager.getSubscription();
-        list.push({
-          id: 'browser-sub',
-          label: 'Push Subscription Creation (Browser)',
-          status: browserSub ? 'pass' : 'warn',
-          detail: browserSub
-            ? `Active endpoint: ${new URL(browserSub.endpoint).hostname}`
-            : 'No active PushManager subscription yet — tap Enable Prayer Notifications.',
-        });
+        const browserSub = await swReg.pushManager.getSubscription();
+        if (browserSub) {
+          patchCheck(
+            seq,
+            'browser-sub',
+            'pass',
+            `Active browser subscription on host ${safeHostname(browserSub.endpoint)}`
+          );
+        } else {
+          patchCheck(
+            seq,
+            'browser-sub',
+            'warning',
+            'No active PushSubscription in browser yet — tap Enable / Renew Subscription.'
+          );
+        }
       } catch (err) {
-        list.push({
-          id: 'browser-sub',
-          label: 'Push Subscription Creation (Browser)',
-          status: 'fail',
-          detail: (err as Error).message,
-        });
+        patchCheck(
+          seq,
+          'browser-sub',
+          'fail',
+          err instanceof Error ? err.message : String(err)
+        );
+      }
+    } else if (env.serviceWorkerSupported && env.pushManagerSupported) {
+      patchCheck(
+        seq,
+        'browser-sub',
+        'fail',
+        'Service Worker PushManager unavailable because SW did not activate.'
+      );
+    }
+
+    // Run VAPID endpoint check & full diagnostics request concurrently so partial failures remain visible
+    const [vapidRes, diagRes] = await Promise.all([
+      fetchVapidPublicKeyStatus(),
+      fetchPushDiagnosticsDetailed(),
+    ]);
+
+    if (runSeqRef.current !== seq) return;
+
+    if (vapidRes.ok && vapidRes.configured) {
+      patchCheck(
+        seq,
+        'vapid-endpoint',
+        'pass',
+        `HTTP ${vapidRes.httpStatus ?? 200} · Public key ${vapidRes.publicKeyPreview ?? 'loaded'}`
+      );
+    } else {
+      patchCheck(
+        seq,
+        'vapid-endpoint',
+        'fail',
+        vapidRes.error || 'VAPID public-key endpoint did not return a key.'
+      );
+    }
+
+    if (diagRes.ok) {
+      const d = diagRes.data;
+      setDiag(d);
+      const isSupabaseMode =
+        d.backendMode === 'supabase' || getBackendTransportMode() === 'supabase';
+
+      patchCheck(
+        seq,
+        'backend-reachability',
+        'pass',
+        `Reachable (${isSupabaseMode ? 'Supabase Edge Functions' : 'Express API'})`
+      );
+      patchCheck(
+        seq,
+        'edge-function-response',
+        'pass',
+        `HTTP ${diagRes.httpStatus} JSON OK · Colombo ${d.colomboDate} ${(d.colomboTime || '').slice(0, 5)}`
+      );
+
+      patchCheck(
+        seq,
+        'vapid-compat',
+        d.vapid?.configured ? 'pass' : 'fail',
+        d.vapid?.configured
+          ? `Validated P-256 pair (${d.vapid.publicKeyPreview ?? 'ok'}) · ${d.vapid.subject ?? ''}`
+          : d.vapid?.errorMessage || 'Backend reported VAPID keys missing or mismatched.'
+      );
+
+      const sub = d.subscription;
+      patchCheck(
+        seq,
+        'device-registration',
+        sub?.deviceId ? 'pass' : 'warning',
+        sub?.deviceId
+          ? `Device registered (ID prefix ${sub.deviceId.slice(0, 8)} · ${sub.districtId})`
+          : 'No device row found yet in backend for this browser.'
+      );
+
+      patchCheck(
+        seq,
+        'push-sub-persistence',
+        sub?.subscriptionId ? 'pass' : 'warning',
+        sub?.subscriptionId
+          ? `Persisted (${sub.endpointPreview || 'endpoint saved'}) · Last registered ${formatTs(sub.lastRegisteredAt)}`
+          : 'No push_subscriptions row persisted yet.'
+      );
+
+      patchCheck(
+        seq,
+        'backend-verification',
+        sub?.status === 'active' ? 'pass' : sub ? 'fail' : 'warning',
+        sub?.status === 'active'
+          ? `Verified active (${sub.zoneName}) · Verified at ${formatTs(sub.lastVerifiedAt ?? sub.lastRegisteredAt)}`
+          : sub
+          ? `Subscription status is "${sub.status}" — tap Enable / Renew Subscription.`
+          : 'Awaiting initial device registration.'
+      );
+
+      patchCheck(
+        seq,
+        'cron-scheduler',
+        d.scheduler?.running ? 'pass' : 'fail',
+        d.scheduler?.running
+          ? `${isSupabaseMode ? 'pg_cron' : 'Server scheduler'} active · Last tick: ${formatTs(d.scheduler.lastTickAt)}`
+          : 'Scheduler reported inactive.'
+      );
+
+      patchCheck(
+        seq,
+        'prayer-dispatch',
+        sub?.status === 'active' && sub?.nextScheduledPrayer ? 'pass' : 'warning',
+        sub?.nextScheduledPrayer
+          ? `Ready — Next: ${sub.nextScheduledPrayer.label} at ${formatTime12h(
+              sub.nextScheduledPrayer.timeHHMM
+            )} (${sub.nextScheduledPrayer.countdownFormatted})`
+          : 'Register device to bind district prayer schedule.'
+      );
+
+      patchCheck(
+        seq,
+        'last-push-delivery',
+        sub?.lastDeliverySuccessAt
+          ? 'pass'
+          : sub?.lastDeliveryError
+          ? 'fail'
+          : 'warning',
+        sub?.lastDeliverySuccessAt
+          ? `Last accepted push: ${formatTs(sub.lastDeliverySuccessAt)}`
+          : sub?.lastDeliveryError
+          ? `Last error: ${sub.lastDeliveryError}`
+          : 'No push deliveries yet — tap Send End-to-End Test Push.'
+      );
+
+      patchCheck(
+        seq,
+        'last-notification-click',
+        sub?.lastClickVerifiedAt ? 'pass' : 'warning',
+        sub?.lastClickVerifiedAt
+          ? `Click verified at ${formatTs(sub.lastClickVerifiedAt)}`
+          : 'Tap a delivered system notification to confirm click tracking.'
+      );
+    } else {
+      setDiag(null);
+      setBackendError(diagRes.error);
+
+      patchCheck(
+        seq,
+        'vapid-compat',
+        vapidRes.ok ? 'warning' : 'fail',
+        vapidRes.ok
+          ? 'VAPID public key reachable, but full backend diagnostics failed.'
+          : vapidRes.error || 'VAPID compatibility check failed.'
+      );
+
+      const isReachableButHttpError = diagRes.httpStatus !== null;
+      patchCheck(
+        seq,
+        'backend-reachability',
+        isReachableButHttpError ? 'pass' : 'fail',
+        isReachableButHttpError
+          ? `Reached server (HTTP ${diagRes.httpStatus}), request rejected.`
+          : diagRes.error
+      );
+
+      patchCheck(
+        seq,
+        'edge-function-response',
+        'fail',
+        diagRes.httpStatus
+          ? `HTTP ${diagRes.httpStatus}: ${diagRes.error}`
+          : diagRes.error
+      );
+
+      for (const id of [
+        'device-registration',
+        'push-sub-persistence',
+        'backend-verification',
+        'cron-scheduler',
+        'prayer-dispatch',
+        'last-push-delivery',
+        'last-notification-click',
+      ]) {
+        patchCheck(seq, id, 'fail', 'Blocked because backend diagnostics failed.');
       }
     }
 
-    const backendDiag = await fetchPushDiagnostics();
-    setDiag(backendDiag);
-
-    if (backendDiag) {
-      const isSupabaseMode =
-        backendDiag.backendMode === 'supabase' || getBackendTransportMode() === 'supabase';
-      list.push({
-        id: 'vapid',
-        label: 'VAPID Configuration & EC P-256 Key Match',
-        status: backendDiag.vapid.configured ? 'pass' : 'fail',
-        detail: backendDiag.vapid.configured
-          ? `${backendDiag.vapid.publicKeyPreview} (${isSupabaseMode ? 'Supabase Secrets' : 'Environment Variables'} · Validated Match · ${backendDiag.vapid.subject ?? ''})`
-          : backendDiag.vapid.errorMessage ||
-            'VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_SUBJECT are not configured on the backend server.',
-      });
-
-      list.push({
-        id: 'backend-storage',
-        label: isSupabaseMode ? 'Supabase PostgreSQL Storage & RLS' : 'Backend Subscription Storage',
-        status: backendDiag.subscription?.status === 'active' ? 'pass' : 'warn',
-        detail: backendDiag.subscription
-          ? `Status: ${backendDiag.subscription.status} · Zone ${backendDiag.subscription.zoneId} (${backendDiag.subscription.districtId})`
-          : 'Not stored on server yet for this device.',
-      });
-
-      list.push({
-        id: 'scheduler',
-        label: isSupabaseMode ? 'Supabase pg_cron & ACJU Integration' : 'Server Scheduler & ACJU Integration',
-        status: backendDiag.scheduler.running ? 'pass' : 'fail',
-        detail: `Colombo ${backendDiag.colomboDate} ${backendDiag.colomboTime.slice(0, 5)} · Tick every ${Math.round(
-          backendDiag.scheduler.intervalMs / 1000
-        )}s · TTL ${backendDiag.scheduler.ttlSeconds}s`,
-      });
-
-      list.push({
-        id: 'sw-push-display',
-        label: 'Test Delivery & Service Worker Display',
-        status: backendDiag.subscription?.lastDeliverySuccessAt ? 'pass' : 'warn',
-        detail: backendDiag.subscription?.lastDeliverySuccessAt
-          ? `Last accepted push: ${formatTs(backendDiag.subscription.lastDeliverySuccessAt)}`
-          : 'Send a test push notification below to verify APNs/FCM + Service Worker display.',
-      });
-
-      list.push({
-        id: 'click-handling',
-        label: 'Notification Click Handling',
-        status: backendDiag.subscription?.lastClickVerifiedAt ? 'pass' : 'warn',
-        detail: backendDiag.subscription?.lastClickVerifiedAt
-          ? `Verified click at ${formatTs(backendDiag.subscription.lastClickVerifiedAt)}`
-          : 'Tap a delivered system notification to verify notificationclick opening & tracking.',
-      });
-
-      list.push({
-        id: 'expiration-handling',
-        label: 'Subscription Expiration & Renewal Support',
-        status: 'pass',
-        detail:
-          'HTTP 404/410 cleanup + Service Worker pushsubscriptionchange auto-renewal active.',
-      });
-    } else {
-      list.push({
-        id: 'backend-offline',
-        label: 'Backend Server Reachability',
-        status: 'fail',
-        detail:
-          getBackendTransportMode() === 'supabase'
-            ? 'Could not reach Supabase Edge Function register-device (?action=diagnostics).'
-            : 'Could not reach /api/push/diagnostics.',
-      });
+    if (runSeqRef.current === seq) {
+      setClientLogs(getPushClientEvents());
+      setRunningDiagnostics(false);
     }
-
-    setChecks(list);
-  }, []);
+  }, [patchCheck]);
 
   useEffect(() => {
     void runLiveChecks();
@@ -268,6 +577,7 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
   }, [runLiveChecks]);
 
   const handleEnablePush = async () => {
+    if (busyAction !== null) return;
     setBusyAction('enable');
     setActionFeedback(null);
     try {
@@ -278,64 +588,116 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
       });
       setActionFeedback(
         res.ok
-          ? 'Subscription created, persisted to backend storage, and verified.'
-          : res.error || 'Subscription failed.'
+          ? {
+              tone: 'success',
+              message: 'Subscription created, persisted to backend storage, and verified active.',
+            }
+          : {
+              tone: 'error',
+              message: `${res.failedStage ? `[${res.failedStage}] ` : ''}${
+                res.error || 'Subscription failed.'
+              }`,
+            }
       );
       onPushStatusUpdated();
       await runLiveChecks();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendPushClientEvent({ level: 'error', stage: 'diag_enable', message: msg });
+      setActionFeedback({ tone: 'error', message: `Unexpected error: ${msg}` });
     } finally {
       setBusyAction(null);
     }
   };
 
   const handleTestPush = async () => {
+    if (busyAction !== null) return;
     setBusyAction('test');
     setActionFeedback(null);
     try {
       const res = await sendBackendTestPushNotification();
       setActionFeedback(
         res.ok
-          ? `Server pushed encrypted payload (HTTP ${res.statusCode ?? 201}). Watch for your device notification and tap it to verify click handling.`
-          : res.error || 'Test push failed.'
+          ? {
+              tone: 'success',
+              message: `Server pushed encrypted payload (HTTP ${res.statusCode ?? 201}). Watch for your device notification and tap it to verify click handling.`,
+            }
+          : {
+              tone: 'error',
+              message: res.error || 'Test push failed.',
+            }
       );
       onPushStatusUpdated();
       await runLiveChecks();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendPushClientEvent({ level: 'error', stage: 'diag_test', message: msg });
+      setActionFeedback({ tone: 'error', message: `Unexpected error: ${msg}` });
     } finally {
       setBusyAction(null);
     }
   };
 
   const handleSimulateExpiration = async () => {
+    if (busyAction !== null) return;
     setBusyAction('expire');
     setActionFeedback(null);
     try {
       const res = await triggerExpiredCleanupDiagnostic();
       setActionFeedback(
         res.ok
-          ? 'Marked subscription as expired (simulated 410 Gone). Tap Enable/Renew below to test automatic renewal.'
-          : res.error || 'Could not test expiration cleanup.'
+          ? {
+              tone: 'success',
+              message:
+                'Marked subscription as expired (simulated 410 Gone). Tap Enable / Renew below to test automatic renewal.',
+            }
+          : {
+              tone: 'error',
+              message: res.error || 'Could not test expiration cleanup.',
+            }
       );
       onPushStatusUpdated();
       await runLiveChecks();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendPushClientEvent({ level: 'error', stage: 'diag_expire', message: msg });
+      setActionFeedback({ tone: 'error', message: `Unexpected error: ${msg}` });
     } finally {
       setBusyAction(null);
     }
   };
 
   const handleDisablePush = async () => {
+    if (busyAction !== null) return;
     setBusyAction('disable');
     setActionFeedback(null);
     try {
       const res = await disableBackgroundPushNotifications();
       setActionFeedback(
-        res.ok ? 'Unsubscribed browser and marked backend subscription disabled.' : res.error || 'Disable failed.'
+        res.ok
+          ? {
+              tone: 'success',
+              message: 'Unsubscribed browser and marked backend subscription disabled.',
+            }
+          : {
+              tone: 'error',
+              message: res.error || 'Disable failed.',
+            }
       );
       onPushStatusUpdated();
       await runLiveChecks();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendPushClientEvent({ level: 'error', stage: 'diag_disable', message: msg });
+      setActionFeedback({ tone: 'error', message: `Unexpected error: ${msg}` });
     } finally {
       setBusyAction(null);
     }
   };
+
+  const passCount = checks.filter((c) => c.status === 'pass').length;
+  const failCount = checks.filter((c) => c.status === 'fail').length;
+  const warnCount = checks.filter((c) => c.status === 'warning').length;
 
   return (
     <div className="space-y-5">
@@ -361,11 +723,15 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
 
         <button
           type="button"
+          disabled={runningDiagnostics}
           onClick={() => void runLiveChecks()}
-          className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-stone-300 bg-white px-3.5 text-xs font-medium text-slate-700 hover:bg-stone-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+          className="inline-flex min-h-[42px] items-center gap-1.5 rounded-xl border border-stone-300 bg-white px-3.5 text-xs font-semibold text-slate-800 hover:bg-stone-50 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
         >
-          <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
-          <span>Refresh Checks</span>
+          <RefreshCw
+            className={`h-3.5 w-3.5 ${runningDiagnostics ? 'animate-spin' : ''}`}
+            aria-hidden="true"
+          />
+          <span>{runningDiagnostics ? 'Running Diagnostics…' : 'Run Diagnostics Again'}</span>
         </button>
       </div>
 
@@ -414,23 +780,39 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
         </div>
 
         {actionFeedback && (
-          <p className="mt-3 rounded-xl bg-stone-100 px-3.5 py-2 text-xs text-slate-800 dark:bg-slate-800 dark:text-slate-200">
-            {actionFeedback}
+          <p
+            role={actionFeedback.tone === 'error' ? 'alert' : 'status'}
+            className={`mt-3 rounded-xl border px-3.5 py-2 text-xs ${
+              actionFeedback.tone === 'error'
+                ? 'border-rose-300 bg-rose-50 text-rose-900 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-200'
+                : 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200'
+            }`}
+          >
+            {actionFeedback.message}
+          </p>
+        )}
+
+        {backendError && (
+          <p
+            role="alert"
+            className="mt-3 rounded-xl border border-rose-300 bg-rose-50/90 px-3.5 py-2 text-xs text-rose-900 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-200"
+          >
+            <strong>Backend Diagnostics Warning:</strong> {backendError}
           </p>
         )}
       </section>
 
-      {diag && !diag.vapid.configured && (
+      {diag && !diag.vapid?.configured && (
         <section className="rounded-3xl border border-amber-300 bg-amber-50 p-4 sm:p-5 text-amber-950 dark:border-amber-700/70 dark:bg-amber-950/40 dark:text-amber-100">
           <div className="flex items-start gap-2.5">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-300" aria-hidden="true" />
             <div className="space-y-2 text-xs">
               <h2 className="text-sm font-semibold">
-                VAPID Keys Not Configured ({diag.vapid.status})
+                VAPID Keys Not Configured ({diag.vapid?.status ?? 'missing'})
               </h2>
-              <p>{diag.vapid.errorMessage}</p>
+              <p>{diag.vapid?.errorMessage}</p>
               <ol className="list-decimal space-y-1 pl-4 text-amber-900 dark:text-amber-200">
-                {diag.vapid.setupInstructions.map((step, i) => (
+                {(diag.vapid?.setupInstructions ?? []).map((step, i) => (
                   <li key={i}>{step.replace(/^\d+\.\s*/, '')}</li>
                 ))}
               </ol>
@@ -439,11 +821,25 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
         </section>
       )}
 
-      {/* Diagnostic Matrix */}
+      {/* 21-Point Diagnostic Matrix */}
       <section className="rounded-3xl border border-stone-200 bg-white p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900">
-        <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-          System Verification Checks
-        </h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+            System Verification Checks ({checks.length})
+          </h2>
+          <div className="flex items-center gap-2 font-mono-tabular text-[11px]">
+            <span className="rounded-md bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-900 dark:bg-emerald-950/70 dark:text-emerald-300">
+              {passCount} PASS
+            </span>
+            <span className="rounded-md bg-amber-100 px-2 py-0.5 font-semibold text-amber-900 dark:bg-amber-950/70 dark:text-amber-300">
+              {warnCount} WARNING
+            </span>
+            <span className="rounded-md bg-rose-100 px-2 py-0.5 font-semibold text-rose-900 dark:bg-rose-950/70 dark:text-rose-300">
+              {failCount} FAIL
+            </span>
+          </div>
+        </div>
+
         <div className="mt-3 divide-y divide-stone-100 dark:divide-slate-800">
           {checks.map((item) => (
             <div key={item.id} className="flex items-start justify-between gap-3 py-2.5">
@@ -455,25 +851,38 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
                   {item.detail}
                 </p>
               </div>
-              <span className="shrink-0 pt-0.5">
+              <span
+                className={`inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 font-mono-tabular text-[10px] font-bold uppercase tracking-wider ${
+                  item.status === 'pass'
+                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300'
+                    : item.status === 'fail'
+                    ? 'bg-rose-100 text-rose-800 dark:bg-rose-950/80 dark:text-rose-300'
+                    : item.status === 'warning'
+                    ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300'
+                    : 'bg-stone-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                }`}
+              >
                 {item.status === 'pass' ? (
-                  <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                  <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
                 ) : item.status === 'fail' ? (
-                  <XCircle className="h-4 w-4 text-rose-600 dark:text-rose-400" />
+                  <XCircle className="h-3 w-3" aria-hidden="true" />
+                ) : item.status === 'warning' ? (
+                  <AlertTriangle className="h-3 w-3" aria-hidden="true" />
                 ) : (
-                  <AlertTriangle className="h-4 w-4 text-amber-500" />
+                  <Clock className="h-3 w-3" aria-hidden="true" />
                 )}
+                <span>{statusBadgeLabel(item.status)}</span>
               </span>
             </div>
           ))}
         </div>
       </section>
 
-      {/* Live Service Worker Events + Next Scheduled Prayer */}
+      {/* Backend State + Technical Event Log */}
       <div className="grid gap-4 lg:grid-cols-2">
         <section className="rounded-3xl border border-stone-200 bg-white p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900">
           <div className="flex items-center gap-2">
-            <Server className="h-4 w-4 text-emerald-700 dark:text-emerald-400" />
+            <Server className="h-4 w-4 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
             <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
               Backend Next Prayer &amp; Scheduler State
             </h2>
@@ -494,94 +903,170 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
               <div className="flex justify-between gap-3">
                 <dt className="text-slate-500">Last Scheduler Tick</dt>
                 <dd className="text-slate-700 dark:text-slate-300">
-                  {formatTs(diag.scheduler.lastTickAt)}
+                  {formatTs(diag.scheduler?.lastTickAt)}
                 </dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-slate-500">Active / Total Subscriptions</dt>
                 <dd className="font-mono-tabular text-slate-700 dark:text-slate-300">
-                  {diag.stats.activeSubscriptions} / {diag.stats.totalSubscriptions} (Expired:{' '}
-                  {diag.stats.expiredSubscriptions})
+                  {diag.stats?.activeSubscriptions ?? 0} / {diag.stats?.totalSubscriptions ?? 0} (Expired:{' '}
+                  {diag.stats?.expiredSubscriptions ?? 0})
                 </dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-slate-500">Backend Engine</dt>
                 <dd className="text-right text-slate-700 dark:text-slate-300">
-                  {diag.databasePath}
+                  {diag.databasePath || getBackendTransportMode()}
                 </dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-slate-500">Database Migrations</dt>
                 <dd className="font-mono-tabular text-right text-slate-700 dark:text-slate-300">
-                  {diag.migrations.map((m) => m.version).join(', ') || 'None'}
+                  {(diag.migrations ?? []).map((m) => m.version).join(', ') || 'None'}
                 </dd>
               </div>
             </dl>
           ) : (
-            <p className="mt-3 text-xs text-slate-500">Loading backend diagnostics…</p>
+            <p className="mt-3 text-xs text-slate-500">
+              {backendError
+                ? 'Backend telemetry unavailable due to request error above.'
+                : 'Loading backend diagnostics…'}
+            </p>
           )}
 
-          {liveEvents.length > 0 && (
-            <div className="mt-4 border-t border-stone-100 pt-3 dark:border-slate-800">
-              <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                Live Service Worker Events (This Session)
-              </p>
-              <ul className="mt-2 space-y-1.5 text-xs">
-                {liveEvents.map((e, i) => (
-                  <li
-                    key={i}
-                    className="rounded-xl bg-emerald-50/70 px-3 py-1.5 text-emerald-950 dark:bg-emerald-950/40 dark:text-emerald-200"
+          <div className="mt-4 border-t border-stone-100 pt-3 dark:border-slate-800">
+            <h3 className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+              Recent Server Delivery Attempts
+            </h3>
+            {diag && Array.isArray(diag.recentDeliveries) && diag.recentDeliveries.length > 0 ? (
+              <div className="mt-2 space-y-2">
+                {diag.recentDeliveries.slice(0, 6).map((d) => (
+                  <div
+                    key={d.id}
+                    className="rounded-xl border border-stone-200 bg-stone-50/70 px-3 py-2 text-xs dark:border-slate-800 dark:bg-slate-950/50"
                   >
-                    <span className="font-semibold">{e.type}</span> — {e.detail} (
-                    {formatTs(e.at)})
-                  </li>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-slate-900 dark:text-slate-100">
+                        {d.prayer.toUpperCase()} ({d.prayerTimeHHMM})
+                      </span>
+                      <span
+                        className={`rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                          d.status === 'sent'
+                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                            : 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
+                        }`}
+                      >
+                        {d.status} {d.httpStatus ? `(${d.httpStatus})` : ''}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-slate-500">
+                      {formatTs(d.updatedAt)}
+                      {d.errorMessage ? ` · ${d.errorMessage}` : ''}
+                    </p>
+                  </div>
                 ))}
-              </ul>
-            </div>
-          )}
+              </div>
+            ) : (
+              <p className="mt-2 text-xs text-slate-500">
+                No delivery attempts recorded yet for this device.
+              </p>
+            )}
+          </div>
         </section>
 
+        {/* Technical Event Log (Sanitized Client + SW + Backend Logs) */}
         <section className="rounded-3xl border border-stone-200 bg-white p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900">
-          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-            Recent Server Delivery Attempts &amp; Logs
-          </h2>
-          {diag && diag.recentDeliveries.length > 0 ? (
-            <div className="mt-3 space-y-2">
-              {diag.recentDeliveries.slice(0, 6).map((d) => (
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Terminal className="h-4 w-4 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
+              <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                Technical Event Log
+              </h2>
+            </div>
+            {clientLogs.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  clearPushClientEvents();
+                  setClientLogs([]);
+                }}
+                className="text-[11px] font-medium text-slate-500 underline underline-offset-2 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+              >
+                Clear Log
+              </button>
+            )}
+          </div>
+
+          <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+            Timestamped client, Service Worker, and backend stages (tokens, private keys, and full push URLs are redacted).
+          </p>
+
+          {liveEvents.length > 0 && (
+            <div className="mt-3 space-y-1.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-emerald-800 dark:text-emerald-300">
+                Live Service Worker Broadcasts
+              </p>
+              {liveEvents.map((e, i) => (
                 <div
-                  key={d.id}
-                  className="rounded-xl border border-stone-200 bg-stone-50/70 px-3 py-2 text-xs dark:border-slate-800 dark:bg-slate-950/50"
+                  key={i}
+                  className="rounded-xl bg-emerald-50/70 px-3 py-1.5 font-mono-tabular text-[11px] text-emerald-950 dark:bg-emerald-950/40 dark:text-emerald-200"
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-slate-900 dark:text-slate-100">
-                      {d.prayer.toUpperCase()} ({d.prayerTimeHHMM})
-                    </span>
-                    <span
-                      className={`rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
-                        d.status === 'sent'
-                          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-                          : 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
-                      }`}
-                    >
-                      {d.status} {d.httpStatus ? `(${d.httpStatus})` : ''}
-                    </span>
-                  </div>
-                  <p className="mt-0.5 text-[11px] text-slate-500">
-                    {formatTs(d.updatedAt)}
-                    {d.errorMessage ? ` · ${d.errorMessage}` : ''}
-                  </p>
+                  <span className="font-semibold">[{e.type}]</span> {e.detail} · {formatTs(e.at)}
                 </div>
               ))}
             </div>
-          ) : (
-            <p className="mt-3 text-xs text-slate-500">
-              No delivery attempts recorded yet for this device.
-            </p>
           )}
+
+          <div className="mt-3 max-h-72 space-y-1.5 overflow-y-auto pr-1">
+            {clientLogs.length === 0 && (!diag?.recentLogs || diag.recentLogs.length === 0) ? (
+              <p className="text-xs text-slate-500">
+                No push events recorded yet in this browser. Tap &ldquo;Enable / Renew Subscription&rdquo; or &ldquo;Run Diagnostics Again&rdquo;.
+              </p>
+            ) : (
+              <>
+                {clientLogs.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className={`rounded-xl border px-3 py-1.5 font-mono-tabular text-[11px] break-words ${
+                      entry.level === 'error'
+                        ? 'border-rose-200 bg-rose-50/70 text-rose-950 dark:border-rose-900/50 dark:bg-rose-950/30 dark:text-rose-200'
+                        : entry.level === 'warn'
+                        ? 'border-amber-200 bg-amber-50/70 text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200'
+                        : 'border-stone-200 bg-stone-50/70 text-slate-700 dark:border-slate-800 dark:bg-slate-950/60 dark:text-slate-300'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold uppercase">
+                        {entry.level} · {entry.stage}
+                        {entry.httpStatus ? ` (HTTP ${entry.httpStatus})` : ''}
+                      </span>
+                      <span className="shrink-0 opacity-70">{formatTs(entry.at)}</span>
+                    </div>
+                    <p className="mt-0.5">{entry.message}</p>
+                  </div>
+                ))}
+
+                {(diag?.recentLogs ?? []).slice(0, 8).map((log) => (
+                  <div
+                    key={`srv-${log.id}`}
+                    className="rounded-xl border border-stone-200 bg-stone-50/50 px-3 py-1.5 font-mono-tabular text-[11px] text-slate-600 dark:border-slate-800 dark:bg-slate-950/40 dark:text-slate-400 break-words"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold uppercase">
+                        SERVER · {log.level} · {log.category}
+                      </span>
+                      <span className="shrink-0 opacity-70">{formatTs(log.createdAt)}</span>
+                    </div>
+                    <p className="mt-0.5">{log.message}</p>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
         </section>
       </div>
 
-      {/* Physical iPhone 13-Point Verification Checklist */}
+      {/* Physical iPhone Verification Matrix */}
       <section className="rounded-3xl border border-stone-200 bg-stone-100/80 p-4 sm:p-5 text-xs text-slate-700 dark:border-slate-800 dark:bg-slate-900/70 dark:text-slate-300">
         <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
           Physical iPhone Verification Matrix (13-Point Checklist)

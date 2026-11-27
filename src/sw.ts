@@ -1,10 +1,14 @@
 /// <reference lib="webworker" />
+import { CacheableResponsePlugin } from 'workbox-cacheable-response';
+import { ExpirationPlugin } from 'workbox-expiration';
 import {
   cleanupOutdatedCaches,
   createHandlerBoundToURL,
   precacheAndRoute,
 } from 'workbox-precaching';
+import { RangeRequestsPlugin } from 'workbox-range-requests';
 import { NavigationRoute, registerRoute } from 'workbox-routing';
+import { CacheFirst } from 'workbox-strategies';
 
 declare let self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: Array<{ url: string; revision: string | null } | string>;
@@ -13,6 +17,8 @@ declare let self: ServiceWorkerGlobalScope & {
 const SW_META_DB = 'my_adhan_sw_meta';
 const SW_META_STORE = 'kv';
 const PUSH_CHANNEL_NAME = 'my-adhan-push';
+const AUDIO_CACHE_NAME = 'my-adhan-audio-v1';
+const DEFAULT_ADHAN_AUDIO_URL = '/assets/aistudio/Adhan_a222d363.mp3';
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -66,9 +72,38 @@ function broadcastPushEvent(message: Record<string, unknown>): void {
   }
 }
 
+function deduplicateManifest(
+  entries: Array<{ url: string; revision: string | null } | string>
+): Array<{ url: string; revision: string | null } | string> {
+  const seen = new Map<string, { url: string; revision: string | null } | string>();
+  for (const entry of entries) {
+    const url = typeof entry === 'string' ? entry : entry.url;
+    const prev = seen.get(url);
+    // Prefer an entry with an explicit revision hash over null if duplicates ever occur
+    if (!prev || (typeof entry !== 'string' && entry.revision !== null)) {
+      seen.set(url, entry);
+    }
+  }
+  return Array.from(seen.values());
+}
+
 cleanupOutdatedCaches();
-const manifestEntries = self.__WB_MANIFEST ?? [];
+const manifestEntries = deduplicateManifest(self.__WB_MANIFEST ?? []);
 precacheAndRoute(manifestEntries);
+
+// Runtime caching for Adhan MP3 assets with iOS Safari HTTP Range request support
+registerRoute(
+  ({ request, url }) =>
+    url.pathname.endsWith('.mp3') || request.destination === 'audio',
+  new CacheFirst({
+    cacheName: AUDIO_CACHE_NAME,
+    plugins: [
+      new CacheableResponsePlugin({ statuses: [0, 200, 206] }),
+      new RangeRequestsPlugin(),
+      new ExpirationPlugin({ maxEntries: 8, maxAgeSeconds: 60 * 60 * 24 * 60 }),
+    ],
+  })
+);
 
 const hasPrecachedIndex = manifestEntries.some((entry) => {
   const url = typeof entry === 'string' ? entry : entry.url;
@@ -89,7 +124,24 @@ self.addEventListener('install', () => {
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    (async () => {
+      await self.clients.claim();
+      // Best-effort non-blocking warm cache of default Adhan MP3 so offline playback works
+      try {
+        const cache = await caches.open(AUDIO_CACHE_NAME);
+        const existing = await cache.match(DEFAULT_ADHAN_AUDIO_URL);
+        if (!existing) {
+          const res = await fetch(DEFAULT_ADHAN_AUDIO_URL);
+          if (res.ok && res.status === 200) {
+            await cache.put(DEFAULT_ADHAN_AUDIO_URL, res);
+          }
+        }
+      } catch {
+        // Non-blocking: ignore offline/network errors during background audio warm-up
+      }
+    })()
+  );
 });
 
 self.addEventListener('message', (event) => {
@@ -99,7 +151,8 @@ self.addEventListener('message', (event) => {
   } else if (data?.type === 'SW_PING') {
     event.ports?.[0]?.postMessage({
       ok: true,
-      swVersion: 'my-adhan-push-v1',
+      swVersion: 'my-adhan-push-v2',
+      precacheCount: manifestEntries.length,
       timestamp: new Date().toISOString(),
     });
   }

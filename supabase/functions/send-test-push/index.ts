@@ -22,6 +22,8 @@ Deno.serve(async (req: Request) => {
     return jsonResponse(req, { error: 'Method not allowed.' }, 405);
   }
 
+  try {
+
   const vapid = getValidatedVapidConfig();
   if (!vapid.configured) {
     return jsonResponse(
@@ -158,15 +160,19 @@ Deno.serve(async (req: Request) => {
     })
     .eq('id', sub.id);
 
-  return jsonResponse(
-    req,
-    {
-      ok: false,
-      statusCode: result.statusCode,
-      expired: result.expired,
-      error: result.error ?? 'Failed to deliver test notification.',
-      subscription: await buildSubscriptionSummary(supabase, deviceId),
-    },
-    result.expired ? 410 : 502
-  );
+    return jsonResponse(
+      req,
+      {
+        ok: false,
+        statusCode: result.statusCode,
+        expired: result.expired,
+        error: result.error ?? 'Failed to deliver test notification.',
+        subscription: await buildSubscriptionSummary(supabase, deviceId),
+      },
+      result.expired ? 410 : 502
+    );
+  } catch (err) {
+    console.error('[send-test-push] Unhandled error:', err instanceof Error ? err.message : String(err));
+    return jsonResponse(req, { ok: false, error: 'Failed to send test push notification.' }, 500);
+  }
 });

@@ -136,5 +136,14 @@ describe('ACJU District JSON Repository Data & Supabase Schema/Deployment Contra
       }
     };
     checkDir(path.resolve(ROOT, 'src'));
+
+    const builtSwPath = path.resolve(ROOT, 'dist/sw.js');
+    if (fs.existsSync(builtSwPath)) {
+      const swContent = fs.readFileSync(builtSwPath, 'utf8');
+      const urls = [...swContent.matchAll(/"url":"([^"]+)"/g)].map((m) => m[1]);
+      expect(urls.length).toBeGreaterThan(0);
+      expect(new Set(urls).size).toBe(urls.length);
+      expect(urls.some((u) => u.endsWith('.mp3'))).toBe(false);
+    }
   });
 });

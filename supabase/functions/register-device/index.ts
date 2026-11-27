@@ -21,9 +21,10 @@ Deno.serve(async (req: Request) => {
     return new Response(null, { status: 204, headers: getCorsHeaders(req) });
   }
 
-  const supabase = getSupabaseAdmin();
-  const url = new URL(req.url);
-  const action = url.searchParams.get('action') ?? '';
+  try {
+    const supabase = getSupabaseAdmin();
+    const url = new URL(req.url);
+    const action = url.searchParams.get('action') ?? '';
 
   if (req.method === 'GET') {
     if (action === 'vapid-public-key') {
@@ -425,10 +426,21 @@ Deno.serve(async (req: Request) => {
     return jsonResponse(req, { error: prefErr.message }, 500);
   }
 
-  const summary = await buildSubscriptionSummary(supabase, deviceId);
-  return jsonResponse(req, {
-    ok: true,
-    verified: true,
-    subscription: summary,
-  });
+    const summary = await buildSubscriptionSummary(supabase, deviceId);
+    return jsonResponse(req, {
+      ok: true,
+      verified: true,
+      subscription: summary,
+    });
+  } catch (err) {
+    console.error('[register-device] Unhandled error:', err instanceof Error ? err.message : String(err));
+    return jsonResponse(
+      req,
+      {
+        ok: false,
+        error: 'Internal server error while processing device push request.',
+      },
+      500
+    );
+  }
 });

@@ -19,7 +19,8 @@ Deno.serve(async (req: Request) => {
     return jsonResponse(req, { error: 'Method not allowed.' }, 405);
   }
 
-  const supabase = getSupabaseAdmin();
+  try {
+    const supabase = getSupabaseAdmin();
   let body: Record<string, unknown> = {};
   try {
     body = (await req.json()) as Record<string, unknown>;
@@ -92,10 +93,14 @@ Deno.serve(async (req: Request) => {
   // Prune old rate-limit buckets
   await supabase.from('edge_rate_limits').delete().lt('updated_at', cutoff24Hours);
 
-  return jsonResponse(req, {
-    ok: true,
-    flaggedInvalidCount: flaggedRows?.length ?? 0,
-    purgedExpiredCount: deletedRows?.length ?? 0,
-    cleanedAt: new Date().toISOString(),
-  });
+    return jsonResponse(req, {
+      ok: true,
+      flaggedInvalidCount: flaggedRows?.length ?? 0,
+      purgedExpiredCount: deletedRows?.length ?? 0,
+      cleanedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[cleanup-subscriptions] Unhandled error:', err instanceof Error ? err.message : String(err));
+    return jsonResponse(req, { ok: false, error: 'Failed to run subscription cleanup.' }, 500);
+  }
 });

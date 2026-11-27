@@ -11,7 +11,8 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
-import { AudioRemindersView } from './components/AudioRemindersView';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { AudioRemindersView, type PushActionFeedback } from './components/AudioRemindersView';
 import { HomeView, type LiveTestAlarmState } from './components/HomeView';
 import { LocationSelectorModal } from './components/LocationSelectorModal';
 import {
@@ -36,6 +37,7 @@ import {
   type ScheduledReminderSummary,
 } from './lib/reminders';
 import {
+  appendPushClientEvent,
   disableBackgroundPushNotifications,
   enableBackgroundPushNotifications,
   fetchBackendPushStatus,
@@ -266,7 +268,29 @@ export default function App() {
   const [backendPushSubscription, setBackendPushSubscription] =
     useState<BackendSubscriptionSummary | null>(null);
   const [pushBusy, setPushBusy] = useState(false);
-  const [pushFeedback, setPushFeedback] = useState<string | null>(null);
+  const pushBusyRef = useRef(false);
+  const [pushFeedback, setPushFeedback] = useState<PushActionFeedback | null>(null);
+
+  const navigateToTab = useCallback((tab: AppTab) => {
+    setActiveTab(tab);
+    if (typeof window !== 'undefined') {
+      try {
+        window.scrollTo({ top: 0, behavior: 'auto' });
+      } catch {
+        window.scrollTo(0, 0);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        window.scrollTo({ top: 0, behavior: 'auto' });
+      } catch {
+        window.scrollTo(0, 0);
+      }
+    }
+  }, [activeTab]);
 
   const refreshBackendPushStatus = useCallback(async () => {
     try {
@@ -850,29 +874,57 @@ export default function App() {
   ]);
 
   const handleEnableBackgroundPush = useCallback(async () => {
+    if (pushBusyRef.current) return;
+    pushBusyRef.current = true;
     setPushBusy(true);
-    setPushFeedback(null);
-    // Start synchronous permission + PushManager registration inside user gesture
-    const enablePromise = enableBackgroundPushNotifications({
-      districtId: selectedDistrict.id,
-      perPrayerEnabled: preferences.perPrayerEnabled,
-      advanceMinutes: preferences.advanceMinutes,
+    setPushFeedback({
+      tone: 'working',
+      stage: 'Initializing',
+      message: 'Checking notification permission, Service Worker, and push registration…',
     });
-    void unlockAudioForSession(selectedBuiltinTrack).then((ok) => {
-      if (ok) setAudioUnlocked(true);
-    });
+
     try {
+      // Start synchronous permission + PushManager registration inside user gesture
+      const enablePromise = enableBackgroundPushNotifications({
+        districtId: selectedDistrict.id,
+        perPrayerEnabled: preferences.perPrayerEnabled,
+        advanceMinutes: preferences.advanceMinutes,
+      });
+      void unlockAudioForSession(selectedBuiltinTrack).then((ok) => {
+        if (ok) setAudioUnlocked(true);
+      });
+
       const res = await enablePromise;
       setCapabilities(reminderAdapterRef.current.getCapabilities());
       if (res.ok && res.subscription) {
         setBackendPushSubscription(res.subscription);
-        setPushFeedback(
-          `Background Web Push active for ${res.subscription.zoneName}. Prayer alerts will arrive even when closed or locked.`
-        );
+        setPushFeedback({
+          tone: 'success',
+          message: `Background Web Push active for ${res.subscription.zoneName}. Prayer alerts will arrive even when closed or locked.`,
+        });
       } else {
-        setPushFeedback(res.error || 'Could not enable background push notifications.');
+        setPushFeedback({
+          tone: 'error',
+          stage: res.failedStage || 'Push Registration',
+          message: res.error || 'Could not enable background push notifications.',
+          technicalDetail: res.technicalDetail,
+        });
       }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      appendPushClientEvent({
+        level: 'error',
+        stage: 'ui_enable_handler',
+        message: detail,
+      });
+      setPushFeedback({
+        tone: 'error',
+        stage: 'Unexpected Error',
+        message: 'Push notification setup encountered an unexpected error.',
+        technicalDetail: detail,
+      });
     } finally {
+      pushBusyRef.current = false;
       setPushBusy(false);
     }
   }, [
@@ -883,39 +935,92 @@ export default function App() {
   ]);
 
   const handleDisableBackgroundPush = useCallback(async () => {
+    if (pushBusyRef.current) return;
+    pushBusyRef.current = true;
     setPushBusy(true);
-    setPushFeedback(null);
+    setPushFeedback({
+      tone: 'working',
+      stage: 'Unsubscribing',
+      message: 'Unsubscribing this device from background Web Push…',
+    });
+
     try {
       const res = await disableBackgroundPushNotifications();
+      setCapabilities(reminderAdapterRef.current.getCapabilities());
       if (res.ok) {
         setBackendPushSubscription(res.subscription);
-        setPushFeedback('Background push notifications disabled for this device.');
+        setPushFeedback({
+          tone: 'success',
+          message: 'Background push notifications disabled for this device.',
+        });
       } else {
-        setPushFeedback(res.error || 'Failed to disable background push notifications.');
+        setPushFeedback({
+          tone: 'error',
+          stage: 'Disable Notifications',
+          message: res.error || 'Failed to disable background push notifications.',
+        });
       }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      appendPushClientEvent({
+        level: 'error',
+        stage: 'ui_disable_handler',
+        message: detail,
+      });
+      setPushFeedback({
+        tone: 'error',
+        stage: 'Disable Notifications',
+        message: 'Could not disable push notifications due to an unexpected error.',
+        technicalDetail: detail,
+      });
     } finally {
+      pushBusyRef.current = false;
       setPushBusy(false);
     }
   }, []);
 
   const handleSendBackgroundTestPush = useCallback(async () => {
+    if (pushBusyRef.current) return;
+    pushBusyRef.current = true;
     setPushBusy(true);
-    setPushFeedback(null);
+    setPushFeedback({
+      tone: 'working',
+      stage: 'Sending Test Push',
+      message: 'Sending encrypted test Web Push through backend…',
+    });
+
     try {
       const res = await sendBackendTestPushNotification();
       if (res.subscription) {
         setBackendPushSubscription(res.subscription);
       }
       if (res.ok) {
-        setPushFeedback(
-          `Test Web Push sent (HTTP ${res.statusCode ?? 201}) — lock your phone or check Notification Center.`
-        );
+        setPushFeedback({
+          tone: 'success',
+          message: `Test Web Push sent (HTTP ${res.statusCode ?? 201}) — lock your phone or check Notification Center.`,
+        });
       } else {
-        setPushFeedback(
-          res.error || 'Failed to send test push notification.'
-        );
+        setPushFeedback({
+          tone: 'error',
+          stage: 'Send Test Notification',
+          message: res.error || 'Failed to send test push notification.',
+        });
       }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      appendPushClientEvent({
+        level: 'error',
+        stage: 'ui_test_handler',
+        message: detail,
+      });
+      setPushFeedback({
+        tone: 'error',
+        stage: 'Send Test Notification',
+        message: 'Test push request failed unexpectedly.',
+        technicalDetail: detail,
+      });
     } finally {
+      pushBusyRef.current = false;
       setPushBusy(false);
     }
   }, []);
@@ -1019,17 +1124,42 @@ export default function App() {
   }, [districts, zones]);
 
   const handleOnboardingRequestNotifications = useCallback(async () => {
-    // Runs synchronous Notification.requestPermission() first, then completes PushManager subscription & backend registration
-    const res = await enableBackgroundPushNotifications({
-      districtId: selectedDistrict.id,
-      perPrayerEnabled: preferences.perPrayerEnabled,
-      advanceMinutes: preferences.advanceMinutes,
-    });
-    setCapabilities(reminderAdapterRef.current.getCapabilities());
-    if (res.ok && res.subscription) {
-      setBackendPushSubscription(res.subscription);
+    try {
+      // Runs synchronous Notification.requestPermission() first, then completes PushManager subscription & backend registration
+      const res = await enableBackgroundPushNotifications({
+        districtId: selectedDistrict.id,
+        perPrayerEnabled: preferences.perPrayerEnabled,
+        advanceMinutes: preferences.advanceMinutes,
+      });
+      setCapabilities(reminderAdapterRef.current.getCapabilities());
+      if (res.ok && res.subscription) {
+        setBackendPushSubscription(res.subscription);
+      } else if (!res.ok) {
+        setPushFeedback({
+          tone: 'error',
+          stage: res.failedStage || 'Onboarding Notification Setup',
+          message: res.error || 'Could not complete background push setup.',
+          technicalDetail: res.technicalDetail,
+        });
+      }
+      return res.permission;
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      appendPushClientEvent({
+        level: 'error',
+        stage: 'onboarding_notifications',
+        message: detail,
+      });
+      setPushFeedback({
+        tone: 'error',
+        stage: 'Onboarding Notification Setup',
+        message: 'Could not complete notification setup.',
+        technicalDetail: detail,
+      });
+      return typeof window !== 'undefined' && 'Notification' in window
+        ? Notification.permission
+        : 'unsupported';
     }
-    return res.permission;
   }, [selectedDistrict.id, preferences.perPrayerEnabled, preferences.advanceMinutes]);
 
   const handleOnboardingUnlockAudio = useCallback(async () => {
@@ -1053,7 +1183,7 @@ export default function App() {
           <div className="mx-auto flex h-[52px] max-w-6xl items-center justify-between gap-8 px-4 sm:h-16 sm:px-6">
             <button
               type="button"
-              onClick={() => setActiveTab('today')}
+              onClick={() => navigateToTab('today')}
               className="font-display text-lg font-bold tracking-tight text-emerald-900 whitespace-nowrap shrink-0 dark:text-emerald-300"
             >
               My Adhan
@@ -1066,7 +1196,7 @@ export default function App() {
                   <button
                     key={item.id}
                     type="button"
-                    onClick={() => setActiveTab(item.id)}
+                    onClick={() => navigateToTab(item.id)}
                     className={`relative min-h-[44px] text-sm font-medium transition-colors whitespace-nowrap shrink-0 ${
                       active
                         ? 'text-emerald-900 dark:text-emerald-300'
@@ -1173,16 +1303,10 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        {/* Main Content with Smooth View Transitions */}
+        {/* Main Content (Immediate Mount on Tab Switch for iOS Reliability + ErrorBoundary) */}
         <main className="mx-auto max-w-6xl px-3.5 py-4 pb-24 sm:px-6 sm:py-6 md:pb-10">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={activeTab}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-            >
+          <ErrorBoundary resetKey={activeTab} onResetToHome={() => navigateToTab('today')}>
+            <div key={activeTab}>
               {activeTab === 'today' && (
                 <HomeView
                   selectedDistrict={selectedDistrict}
@@ -1198,7 +1322,7 @@ export default function App() {
                   onOpenLocationModal={() => setLocationModalOpen(true)}
                   onTogglePrayerReminder={handleTogglePrayerReminder}
                   onPreviewAudio={() => void handlePreviewSelectedAudio()}
-                  onNavigateTab={(tab) => setActiveTab(tab)}
+                  onNavigateTab={(tab) => navigateToTab(tab)}
                 />
               )}
 
@@ -1225,7 +1349,7 @@ export default function App() {
                   onEnableBackgroundPush={handleEnableBackgroundPush}
                   onDisableBackgroundPush={handleDisableBackgroundPush}
                   onSendBackgroundTestPush={handleSendBackgroundTestPush}
-                  onOpenDiagnostics={() => setActiveTab('diagnostics')}
+                  onOpenDiagnostics={() => navigateToTab('diagnostics')}
                 />
               )}
 
@@ -1236,7 +1360,7 @@ export default function App() {
                   selectedZone={selectedZone}
                   preferences={preferences}
                   onUpdatePreferences={updatePreferences}
-                  onOpenDiagnostics={() => setActiveTab('diagnostics')}
+                  onOpenDiagnostics={() => navigateToTab('diagnostics')}
                 />
               )}
 
@@ -1245,12 +1369,12 @@ export default function App() {
                   selectedDistrict={selectedDistrict}
                   selectedZone={selectedZone}
                   preferences={preferences}
-                  onBack={() => setActiveTab('audio')}
+                  onBack={() => navigateToTab('audio')}
                   onPushStatusUpdated={() => void refreshBackendPushStatus()}
                 />
               )}
-            </motion.div>
-          </AnimatePresence>
+            </div>
+          </ErrorBoundary>
         </main>
 
         {/* Mobile Thumb-Zone Bottom Tab Bar */}
@@ -1265,7 +1389,7 @@ export default function App() {
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setActiveTab(item.id)}
+                  onClick={() => navigateToTab(item.id)}
                   className={`relative flex min-h-[44px] flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors ${
                     active
                       ? 'text-emerald-800 dark:text-emerald-300'

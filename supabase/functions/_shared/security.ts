@@ -54,12 +54,24 @@ export const VAPID_SETUP_INSTRUCTIONS: string[] = [
 ];
 
 export function getCorsHeaders(req: Request): Record<string, string> {
-  const configuredOrigin = Deno.env.get('ALLOWED_ORIGIN')?.trim();
-  const reqOrigin = req.headers.get('origin')?.trim();
+  const configuredRaw = Deno.env.get('ALLOWED_ORIGIN')?.trim();
+  const reqOrigin = req.headers.get('origin')?.trim().replace(/\/+$/, '');
   let allowOrigin = '*';
-  if (configuredOrigin) {
-    allowOrigin = configuredOrigin;
-  } else if (reqOrigin && (reqOrigin.startsWith('https://') || reqOrigin.startsWith('http://localhost'))) {
+
+  if (configuredRaw) {
+    const allowedList = configuredRaw
+      .split(',')
+      .map((s) => s.trim().replace(/\/+$/, ''))
+      .filter(Boolean);
+    if (reqOrigin && allowedList.includes(reqOrigin)) {
+      allowOrigin = reqOrigin;
+    } else if (allowedList.length > 0) {
+      allowOrigin = allowedList[0];
+    }
+  } else if (
+    reqOrigin &&
+    (reqOrigin.startsWith('https://') || reqOrigin.startsWith('http://localhost') || reqOrigin.startsWith('http://127.0.0.1'))
+  ) {
     allowOrigin = reqOrigin;
   }
 
@@ -67,6 +79,7 @@ export function getCorsHeaders(req: Request): Record<string, string> {
     'Access-Control-Allow-Origin': allowOrigin,
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-device-token',
     'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+    'Access-Control-Max-Age': '86400',
     'Vary': 'Origin',
   };
 }

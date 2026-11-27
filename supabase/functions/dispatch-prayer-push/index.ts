@@ -31,7 +31,8 @@ Deno.serve(async (req: Request) => {
     return jsonResponse(req, { error: 'Unauthorized cron trigger.' }, 401);
   }
 
-  const supabase = getSupabaseAdmin();
+  try {
+    const supabase = getSupabaseAdmin();
   const now = new Date();
   const nowMs = now.getTime();
   const colombo = getColomboNowParts(now);
@@ -256,14 +257,18 @@ Deno.serve(async (req: Request) => {
     details: { candidateDates, ttlSeconds: PUSH_TTL_SECONDS },
   });
 
-  return jsonResponse(req, {
-    ok: true,
-    colomboDate: colombo.dateISO,
-    colomboTime: colombo.formattedTime,
-    checkedSubscriptions: subs?.length ?? 0,
-    dueCount,
-    sentCount,
-    failedCount,
-    expiredCount,
-  });
+    return jsonResponse(req, {
+      ok: true,
+      colomboDate: colombo.dateISO,
+      colomboTime: colombo.formattedTime,
+      checkedSubscriptions: subs?.length ?? 0,
+      dueCount,
+      sentCount,
+      failedCount,
+      expiredCount,
+    });
+  } catch (err) {
+    console.error('[dispatch-prayer-push] Unhandled error:', err instanceof Error ? err.message : String(err));
+    return jsonResponse(req, { ok: false, error: 'Internal scheduler dispatch error.' }, 500);
+  }
 });
