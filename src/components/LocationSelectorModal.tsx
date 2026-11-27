@@ -9,6 +9,8 @@ interface LocationSelectorModalProps {
   districts: readonly AcjuDistrict[];
   zones: readonly AcjuZone[];
   currentDistrictId: string;
+  autoUpdateLocation: boolean;
+  onToggleAutoUpdate: (enabled: boolean) => void;
   onSelectLocation: (resolution: LocationResolution) => void;
 }
 
@@ -18,6 +20,8 @@ export const LocationSelectorModal: React.FC<LocationSelectorModalProps> = ({
   districts,
   zones,
   currentDistrictId,
+  autoUpdateLocation,
+  onToggleAutoUpdate,
   onSelectLocation,
 }) => {
   const [search, setSearch] = useState('');
@@ -54,7 +58,6 @@ export const LocationSelectorModal: React.FC<LocationSelectorModalProps> = ({
     }
 
     setGpsStatus({ loading: true, error: null, result: null });
-    // Single on-demand position lookup (never continuously tracked)
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const { latitude, longitude } = pos.coords;
@@ -73,8 +76,9 @@ export const LocationSelectorModal: React.FC<LocationSelectorModalProps> = ({
       (err) => {
         let message = 'Location detection failed. Please select your district or area manually below.';
         if (err.code === err.PERMISSION_DENIED) {
+          onToggleAutoUpdate(false);
           message =
-            'Location permission was denied. No GPS coordinates were read — please choose your area manually below.';
+            'Location permission was denied. Auto-update is paused — please enable location access in browser settings or pick your area below.';
         } else if (err.code === err.TIMEOUT) {
           message = 'GPS request timed out. Please choose your area manually below.';
         }
@@ -83,7 +87,7 @@ export const LocationSelectorModal: React.FC<LocationSelectorModalProps> = ({
       {
         enableHighAccuracy: false,
         timeout: 9000,
-        maximumAge: 300000,
+        maximumAge: 60000,
       }
     );
   };
@@ -115,7 +119,7 @@ export const LocationSelectorModal: React.FC<LocationSelectorModalProps> = ({
               Select Sri Lanka Location &amp; ACJU Zone
             </h2>
             <p className="mt-0.5 text-sm text-slate-600 dark:text-slate-400">
-              GPS is only requested when you tap Detect Location. No continuous tracking is used.
+              Location permission is asked once on first visit and periodically checked when auto-update is on.
             </p>
           </div>
           <button
@@ -129,7 +133,7 @@ export const LocationSelectorModal: React.FC<LocationSelectorModalProps> = ({
         </div>
 
         <div className="overflow-y-auto p-6 space-y-5">
-          {/* On-demand GPS Detection */}
+          {/* GPS Detection & Periodic Auto-Update */}
           <div className="rounded-xl border border-stone-200 bg-stone-50 p-4 dark:border-slate-800 dark:bg-slate-950/50">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -148,6 +152,39 @@ export const LocationSelectorModal: React.FC<LocationSelectorModalProps> = ({
               >
                 <Compass className="h-4 w-4" aria-hidden="true" />
                 <span>{gpsStatus.loading ? 'Detecting…' : 'Detect My Location'}</span>
+              </button>
+            </div>
+
+            <div className="mt-3 flex items-center justify-between gap-3 border-t border-stone-200 pt-3 dark:border-slate-800">
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-slate-800 dark:text-slate-200">
+                  Auto-update ACJU group via GPS
+                </p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Checks periodically and when reopening the app to switch zones as you travel
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={autoUpdateLocation}
+                aria-label="Auto-update ACJU group via GPS"
+                onClick={() => {
+                  const next = !autoUpdateLocation;
+                  onToggleAutoUpdate(next);
+                  if (next && !gpsStatus.loading) {
+                    handleDetectGPS();
+                  }
+                }}
+                className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors ${
+                  autoUpdateLocation ? 'bg-emerald-700' : 'bg-stone-300 dark:bg-slate-700'
+                }`}
+              >
+                <span
+                  className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${
+                    autoUpdateLocation ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
               </button>
             </div>
 

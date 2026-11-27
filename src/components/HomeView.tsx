@@ -29,6 +29,7 @@ interface HomeViewProps {
   selectedDistrict: AcjuDistrict;
   selectedZone: AcjuZone;
   detectionMethod: 'gps' | 'manual';
+  autoUpdateLocation?: boolean;
   todaySchedule: ResolvedDaySchedule;
   tomorrowSchedule: ResolvedDaySchedule;
   preferences: UserPreferences;
@@ -42,6 +43,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
   selectedDistrict,
   selectedZone,
   detectionMethod,
+  autoUpdateLocation = false,
   todaySchedule,
   tomorrowSchedule,
   preferences,
@@ -174,7 +176,12 @@ export const HomeView: React.FC<HomeViewProps> = ({
                   {colombo.formattedGregorian} · {hijriEstimated} (Est.)
                 </p>
                 <p className="mt-0.5 text-[11px] text-emerald-200/60">
-                  {selectedZone.officialDescription} · {detectionMethod === 'gps' ? 'GPS' : 'Manual'}
+                  {selectedZone.officialDescription} ·{' '}
+                  {detectionMethod === 'gps'
+                    ? autoUpdateLocation
+                      ? 'GPS · Auto'
+                      : 'GPS'
+                    : 'Manual'}
                 </p>
               </div>
 

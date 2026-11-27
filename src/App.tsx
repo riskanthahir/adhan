@@ -21,6 +21,7 @@ import {
 } from './lib/reminders';
 import { resolveEmbeddedDaySchedule } from './shared/acju2026Timetable';
 import { ACJU_DISTRICTS, ACJU_ZONES } from './shared/acjuSeed';
+import { resolveLocationFromCoordinates } from './shared/locationLookup';
 import { getColomboNowParts } from './shared/timetablePolicy';
 import type {
   AdhanAudioTrack,
@@ -34,6 +35,9 @@ type AppTab = 'today' | 'timetable' | 'audio' | 'settings';
 const PREFS_STORAGE_KEY = 'my_adhan_prefs_v2';
 const LEGACY_PREFS_STORAGE_KEY = 'my_adhan_prefs_v1';
 const LOCATION_STORAGE_KEY = 'my_adhan_location_v1';
+const LOCATION_PROMPTED_KEY = 'my_adhan_location_prompted_v1';
+const LOCATION_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const LOCATION_RESUME_MIN_GAP_MS = 60 * 1000;
 
 const BUILTIN_AUDIO_TRACKS: AdhanAudioTrack[] = [
   {
@@ -137,20 +141,49 @@ function loadSavedPreferences(): UserPreferences {
 interface SavedLocation {
   districtId: string;
   detectionMethod: 'gps' | 'manual';
+  autoUpdate: boolean;
+}
+
+function saveLocationToStorage(loc: SavedLocation): void {
+  try {
+    localStorage.setItem(LOCATION_STORAGE_KEY, JSON.stringify(loc));
+  } catch {
+    // Ignore storage errors
+  }
 }
 
 function loadSavedLocation(): SavedLocation {
   try {
     const raw = localStorage.getItem(LOCATION_STORAGE_KEY);
-    if (!raw) return { districtId: 'colombo', detectionMethod: 'manual' };
+    if (!raw) return { districtId: 'colombo', detectionMethod: 'manual', autoUpdate: true };
     const parsed = JSON.parse(raw) as Partial<SavedLocation>;
+    const hasPromptedBefore = localStorage.getItem(LOCATION_PROMPTED_KEY) === '1';
     return {
       districtId: parsed.districtId || 'colombo',
       detectionMethod: parsed.detectionMethod === 'gps' ? 'gps' : 'manual',
+      autoUpdate:
+        typeof parsed.autoUpdate === 'boolean'
+          ? parsed.autoUpdate
+          : parsed.detectionMethod === 'gps' || !hasPromptedBefore,
     };
   } catch {
-    return { districtId: 'colombo', detectionMethod: 'manual' };
+    return { districtId: 'colombo', detectionMethod: 'manual', autoUpdate: true };
   }
+}
+
+async function getGeolocationPermissionState(): Promise<'granted' | 'prompt' | 'denied' | 'unknown'> {
+  if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
+    return 'denied';
+  }
+  if ('permissions' in navigator && typeof navigator.permissions?.query === 'function') {
+    try {
+      const status = await navigator.permissions.query({ name: 'geolocation' });
+      return status.state;
+    } catch {
+      return 'unknown';
+    }
+  }
+  return 'unknown';
 }
 
 function getTomorrowColomboISO(todayISO: string): string {
@@ -238,19 +271,223 @@ export default function App() {
     });
   }, []);
 
-  const handleSelectLocation = (res: LocationResolution) => {
+  const lastLocationCheckAtRef = useRef<number>(0);
+  const locationCheckInFlightRef = useRef<boolean>(false);
+
+  const handleSelectLocation = useCallback((res: LocationResolution) => {
     if (!res.district) return;
+    if (res.detectionMethod === 'gps') {
+      try {
+        localStorage.setItem(LOCATION_PROMPTED_KEY, '1');
+      } catch {
+        // Ignore storage errors
+      }
+    }
     const next: SavedLocation = {
       districtId: res.district.id,
       detectionMethod: res.detectionMethod,
+      autoUpdate: res.detectionMethod === 'gps',
     };
     setSavedLocation(next);
-    try {
-      localStorage.setItem(LOCATION_STORAGE_KEY, JSON.stringify(next));
-    } catch {
-      // Ignore
-    }
-  };
+    saveLocationToStorage(next);
+  }, []);
+
+  const handleToggleAutoUpdateLocation = useCallback((enabled: boolean) => {
+    setSavedLocation((prev) => {
+      const next: SavedLocation = { ...prev, autoUpdate: enabled };
+      saveLocationToStorage(next);
+      return next;
+    });
+  }, []);
+
+  // Ask location permission once on first visit, then check regularly to keep ACJU group/zone updated
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('geolocation' in navigator)) return;
+
+    let cancelled = false;
+    let permissionStatus: PermissionStatus | null = null;
+
+    const runLocationCheck = (isInitialPromptAttempt: boolean) => {
+      if (cancelled || locationCheckInFlightRef.current) return;
+      locationCheckInFlightRef.current = true;
+
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          locationCheckInFlightRef.current = false;
+          lastLocationCheckAtRef.current = Date.now();
+          try {
+            localStorage.setItem(LOCATION_PROMPTED_KEY, '1');
+          } catch {
+            // Ignore
+          }
+          if (cancelled) return;
+
+          const resolved = resolveLocationFromCoordinates(
+            pos.coords.latitude,
+            pos.coords.longitude,
+            districts,
+            zones
+          );
+
+          if (resolved.matched && resolved.district) {
+            const matchedDistrictId = resolved.district.id;
+            setSavedLocation((prev) => {
+              if (!isInitialPromptAttempt && !prev.autoUpdate) return prev;
+              if (
+                prev.districtId === matchedDistrictId &&
+                prev.detectionMethod === 'gps' &&
+                prev.autoUpdate
+              ) {
+                return prev;
+              }
+              const next: SavedLocation = {
+                districtId: matchedDistrictId,
+                detectionMethod: 'gps',
+                autoUpdate: true,
+              };
+              saveLocationToStorage(next);
+              return next;
+            });
+          }
+        },
+        (err) => {
+          locationCheckInFlightRef.current = false;
+          lastLocationCheckAtRef.current = Date.now();
+          try {
+            localStorage.setItem(LOCATION_PROMPTED_KEY, '1');
+          } catch {
+            // Ignore
+          }
+          if (cancelled) return;
+
+          if (err.code === err.PERMISSION_DENIED) {
+            setSavedLocation((prev) => {
+              if (!prev.autoUpdate) return prev;
+              const next: SavedLocation = { ...prev, autoUpdate: false };
+              saveLocationToStorage(next);
+              return next;
+            });
+          }
+        },
+        {
+          enableHighAccuracy: false,
+          timeout: 10000,
+          maximumAge: isInitialPromptAttempt ? 0 : 60000,
+        }
+      );
+    };
+
+    const checkIfPermitted = async () => {
+      if (cancelled || !savedLocation.autoUpdate) return;
+      const permState = await getGeolocationPermissionState();
+      if (cancelled) return;
+
+      if (permState === 'granted') {
+        runLocationCheck(false);
+      } else if (permState === 'unknown' && savedLocation.detectionMethod === 'gps') {
+        runLocationCheck(false);
+      } else if (permState === 'denied') {
+        setSavedLocation((prev) => {
+          if (!prev.autoUpdate) return prev;
+          const next: SavedLocation = { ...prev, autoUpdate: false };
+          saveLocationToStorage(next);
+          return next;
+        });
+      }
+    };
+
+    const init = async () => {
+      let alreadyPrompted = false;
+      try {
+        alreadyPrompted = localStorage.getItem(LOCATION_PROMPTED_KEY) === '1';
+      } catch {
+        alreadyPrompted = false;
+      }
+
+      const permState = await getGeolocationPermissionState();
+      if (cancelled) return;
+
+      // 1. Ask for location permission once on first visit (never re-prompts automatically if dismissed/denied)
+      if (!alreadyPrompted && permState !== 'denied') {
+        try {
+          localStorage.setItem(LOCATION_PROMPTED_KEY, '1');
+        } catch {
+          // Ignore
+        }
+        runLocationCheck(true);
+      } else if (savedLocation.autoUpdate) {
+        // 2. Subsequent visits: silently check if already granted
+        if (permState === 'granted' || (permState === 'unknown' && savedLocation.detectionMethod === 'gps')) {
+          if (Date.now() - lastLocationCheckAtRef.current > 10000) {
+            runLocationCheck(false);
+          }
+        } else if (permState === 'denied') {
+          setSavedLocation((prev) => {
+            if (!prev.autoUpdate) return prev;
+            const next: SavedLocation = { ...prev, autoUpdate: false };
+            saveLocationToStorage(next);
+            return next;
+          });
+        }
+      }
+
+      // Listen for browser permission changes if supported
+      if ('permissions' in navigator && typeof navigator.permissions?.query === 'function') {
+        try {
+          permissionStatus = await navigator.permissions.query({ name: 'geolocation' });
+          if (!cancelled && permissionStatus) {
+            permissionStatus.onchange = () => {
+              if (!permissionStatus) return;
+              if (permissionStatus.state === 'granted') {
+                setSavedLocation((prev) => {
+                  const next: SavedLocation = { ...prev, autoUpdate: true };
+                  saveLocationToStorage(next);
+                  return next;
+                });
+                runLocationCheck(false);
+              } else if (permissionStatus.state === 'denied') {
+                setSavedLocation((prev) => {
+                  if (!prev.autoUpdate) return prev;
+                  const next: SavedLocation = { ...prev, autoUpdate: false };
+                  saveLocationToStorage(next);
+                  return next;
+                });
+              }
+            };
+          }
+        } catch {
+          // Ignore browsers that reject permissions.query
+        }
+      }
+    };
+
+    void init();
+
+    // 3. Regular periodic location check (every 5 minutes) when auto-update is enabled
+    const intervalId = window.setInterval(() => {
+      void checkIfPermitted();
+    }, LOCATION_CHECK_INTERVAL_MS);
+
+    // 4. Refresh when returning to foreground on mobile/desktop (throttled to avoid rapid triggers)
+    const handleResume = () => {
+      if (document.visibilityState && document.visibilityState !== 'visible') return;
+      if (Date.now() - lastLocationCheckAtRef.current < LOCATION_RESUME_MIN_GAP_MS) return;
+      void checkIfPermitted();
+    };
+
+    document.addEventListener('visibilitychange', handleResume);
+    window.addEventListener('focus', handleResume);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleResume);
+      window.removeEventListener('focus', handleResume);
+      if (permissionStatus) {
+        permissionStatus.onchange = null;
+      }
+    };
+  }, [districts, zones, savedLocation.autoUpdate, savedLocation.detectionMethod]);
 
   const handleTogglePrayerReminder = (prayer: PrayerName) => {
     updatePreferences({
@@ -370,6 +607,7 @@ export default function App() {
                   selectedDistrict={selectedDistrict}
                   selectedZone={selectedZone}
                   detectionMethod={savedLocation.detectionMethod}
+                  autoUpdateLocation={savedLocation.autoUpdate}
                   todaySchedule={todaySchedule}
                   tomorrowSchedule={tomorrowSchedule}
                   preferences={preferences}
@@ -463,6 +701,8 @@ export default function App() {
           districts={districts}
           zones={zones}
           currentDistrictId={selectedDistrict.id}
+          autoUpdateLocation={savedLocation.autoUpdate}
+          onToggleAutoUpdate={handleToggleAutoUpdateLocation}
           onSelectLocation={handleSelectLocation}
         />
       </div>
