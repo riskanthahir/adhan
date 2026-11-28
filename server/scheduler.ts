@@ -1,10 +1,13 @@
 import { sendNotification } from 'web-push';
 import {
   appendServerLog,
+  claimDueTestPushJobs,
   getDeliveryByEventKey,
+  getSubscriptionByDeviceId,
   listActiveSubscriptions,
   recordSubscriptionDeliveryFailure,
   recordSubscriptionDeliverySuccess,
+  updateTestPushJobStatus,
   upsertDeliveryAttempt,
   type PushSubscriptionRow,
 } from './db.ts';
@@ -58,6 +61,8 @@ export interface WebPushPayload {
   dateISO?: string;
   zoneId?: number;
   zoneName?: string;
+  jobId?: string;
+  isBackgroundTest?: boolean;
   eventKey: string;
   url: string;
   sentAt: string;
@@ -95,7 +100,7 @@ export async function sendEncryptedWebPush(params: {
     const res = await pushTransport.sendNotification(target, JSON.stringify(params.payload), {
       TTL: params.ttlSeconds ?? PUSH_TTL_SECONDS,
       urgency: 'high',
-      topic: params.payload.isTest ? 'my-adhan-test' : `adhan-${params.payload.prayer ?? 'prayer'}`,
+      topic: params.payload.isTest ? undefined : `adhan-${params.payload.prayer ?? 'prayer'}`,
     });
     return {
       ok: true,
@@ -106,6 +111,17 @@ export async function sendEncryptedWebPush(params: {
   } catch (err) {
     const pushErr = err as { statusCode?: number; body?: string; message?: string };
     const statusCode = typeof pushErr.statusCode === 'number' ? pushErr.statusCode : null;
+    const isBadTopic =
+      statusCode === 400 &&
+      (String(pushErr.body || '').includes('BadWebPushTopic') ||
+        String(pushErr.message || '').includes('BadWebPushTopic'));
+    if (isBadTopic && !params.payload.isTest) {
+      return sendEncryptedWebPush({
+        ...params,
+        payload: { ...params.payload, isTest: true },
+      });
+    }
+
     const expired = statusCode === 404 || statusCode === 410;
     const msgParts = [
       statusCode ? `HTTP ${statusCode}` : 'Network/Push error',
@@ -354,6 +370,58 @@ export async function runSchedulerTick(now = new Date()): Promise<{
           }
         }
       }
+    }
+
+    // 2. Dispatch any due background test push jobs
+    try {
+      const dueTestJobs = claimDueTestPushJobs(nowMs, 10);
+      for (const job of dueTestJobs) {
+        const sub = getSubscriptionByDeviceId(job.deviceId);
+        if (!sub || sub.status !== 'active') {
+          updateTestPushJobStatus(job.id, 'failed', 'No active push subscription for device');
+          continue;
+        }
+
+        const result = await sendEncryptedWebPush({
+          subscription: sub,
+          payload: {
+            title: 'My Adhan — Background Test',
+            body: 'This test notification was scheduled by My Adhan.',
+            prayer: 'test',
+            prayerTimeHHMM: colombo.formattedTime.slice(0, 5),
+            dateISO: colombo.dateISO,
+            zoneId: sub.zoneId,
+            jobId: job.id,
+            eventKey: `test-job:${job.id}`,
+            url: `/?fromPush=1&testJobId=${encodeURIComponent(job.id)}`,
+            isBackgroundTest: true,
+            isTest: true,
+            sentAt: new Date().toISOString(),
+          },
+          ttlSeconds: 300,
+        });
+
+        if (result.ok) {
+          updateTestPushJobStatus(job.id, 'sent');
+          recordSubscriptionDeliverySuccess(sub.deviceId);
+          appendServerLog({
+            level: 'info',
+            category: 'test_push_job',
+            deviceId: sub.deviceId,
+            message: `Delivered background test push job ${job.id}`,
+            meta: { jobId: job.id, statusCode: result.statusCode },
+          });
+        } else {
+          updateTestPushJobStatus(job.id, 'failed', result.error);
+          recordSubscriptionDeliveryFailure(sub.deviceId, result.error ?? 'Test push failed', result.expired);
+        }
+      }
+    } catch (testErr) {
+      appendServerLog({
+        level: 'error',
+        category: 'scheduler_test_jobs',
+        message: `Error processing background test jobs: ${(testErr as Error).message}`,
+      });
     }
 
     lastTickAt = new Date().toISOString();

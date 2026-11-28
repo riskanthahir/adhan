@@ -28,6 +28,18 @@ async function bootstrapServer(): Promise<void> {
     next();
   });
 
+  // Ensure /sw.js is served as JavaScript in all environments if built dist exists
+  app.get('/sw.js', (_req, res, next) => {
+    const swDist = path.resolve(__dirname, 'dist', 'sw.js');
+    if (fs.existsSync(swDist)) {
+      res.setHeader('Content-Type', 'application/javascript');
+      res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate');
+      res.sendFile(swDist);
+      return;
+    }
+    next();
+  });
+
   app.use('/api', createPushRouter());
 
   if (!IS_PRODUCTION) {

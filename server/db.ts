@@ -601,3 +601,132 @@ export function getDatabaseStats(): {
     expiredSubscriptions: expiredSubs,
   };
 }
+
+export interface TestPushJobRow {
+  id: string;
+  deviceId: string;
+  scheduledAt: string;
+  scheduledForEpochMs: number;
+  status: 'pending' | 'processing' | 'sent' | 'failed' | 'cancelled';
+  errorMessage: string | null;
+  sentAt: string | null;
+  attempts: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function createTestPushJob(params: {
+  deviceId: string;
+  scheduledAt: string;
+  scheduledForEpochMs: number;
+}): TestPushJobRow {
+  const db = getDb();
+  const id = randomUUID();
+  const now = new Date().toISOString();
+
+  // Cancel any existing pending jobs for this device
+  cancelPendingTestPushJobs(params.deviceId);
+
+  db.prepare(
+    `INSERT INTO push_test_jobs (
+      id, device_id, scheduled_at, scheduled_for_epoch_ms, status, error_message, sent_at, attempts, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 'pending', NULL, NULL, 0, ?, ?)`
+  ).run(id, params.deviceId, params.scheduledAt, params.scheduledForEpochMs, now, now);
+
+  return {
+    id,
+    deviceId: params.deviceId,
+    scheduledAt: params.scheduledAt,
+    scheduledForEpochMs: params.scheduledForEpochMs,
+    status: 'pending',
+    errorMessage: null,
+    sentAt: null,
+    attempts: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export function cancelPendingTestPushJobs(deviceId: string): number {
+  const db = getDb();
+  const now = new Date().toISOString();
+  const res = db.prepare(
+    `UPDATE push_test_jobs
+     SET status = 'cancelled', updated_at = ?
+     WHERE device_id = ? AND status = 'pending'`
+  ).run(now, deviceId);
+  return Number(res.changes ?? 0);
+}
+
+export function getLatestTestPushJob(deviceId: string): TestPushJobRow | null {
+  const db = getDb();
+  const row = db.prepare(
+    `SELECT * FROM push_test_jobs WHERE device_id = ? ORDER BY id DESC LIMIT 1`
+  ).get(deviceId) as Record<string, unknown> | undefined;
+
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    deviceId: String(row.device_id),
+    scheduledAt: String(row.scheduled_at),
+    scheduledForEpochMs: Number(row.scheduled_for_epoch_ms),
+    status: String(row.status) as TestPushJobRow['status'],
+    errorMessage: row.error_message ? String(row.error_message) : null,
+    sentAt: row.sent_at ? String(row.sent_at) : null,
+    attempts: Number(row.attempts ?? 0),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+export function claimDueTestPushJobs(nowEpochMs: number, limit = 20): TestPushJobRow[] {
+  const db = getDb();
+  const nowIso = new Date().toISOString();
+
+  const rows = db.prepare(
+    `SELECT * FROM push_test_jobs
+     WHERE status = 'pending' AND scheduled_for_epoch_ms <= ?
+     ORDER BY scheduled_for_epoch_ms ASC
+     LIMIT ?`
+  ).all(nowEpochMs, limit) as Array<Record<string, unknown>>;
+
+  const claimed: TestPushJobRow[] = [];
+  for (const r of rows) {
+    const id = String(r.id);
+    db.prepare(
+      `UPDATE push_test_jobs
+       SET status = 'processing', attempts = attempts + 1, updated_at = ?
+       WHERE id = ? AND status = 'pending'`
+    ).run(nowIso, id);
+
+    claimed.push({
+      id,
+      deviceId: String(r.device_id),
+      scheduledAt: String(r.scheduled_at),
+      scheduledForEpochMs: Number(r.scheduled_for_epoch_ms),
+      status: 'processing',
+      errorMessage: r.error_message ? String(r.error_message) : null,
+      sentAt: r.sent_at ? String(r.sent_at) : null,
+      attempts: Number(r.attempts ?? 0) + 1,
+      createdAt: String(r.created_at),
+      updatedAt: nowIso,
+    });
+  }
+
+  return claimed;
+}
+
+export function updateTestPushJobStatus(
+  jobId: string,
+  status: 'sent' | 'failed' | 'cancelled',
+  errorMessage: string | null = null
+): void {
+  const db = getDb();
+  const now = new Date().toISOString();
+  db.prepare(
+    `UPDATE push_test_jobs
+     SET status = ?, error_message = ?, sent_at = CASE WHEN ? = 'sent' THEN ? ELSE sent_at END, updated_at = ?
+     WHERE id = ?`
+  ).run(status, errorMessage, status, now, now, jobId);
+}
+

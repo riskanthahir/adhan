@@ -9,9 +9,32 @@ export const PUSH_CHANNEL_NAME = 'my-adhan-push';
 
 const DEFAULT_FETCH_TIMEOUT_MS = 12_000;
 
-const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').trim().replace(/\/+$/, '');
+export const DEFAULT_SUPABASE_URL = 'https://hrpkmykhfktyjgnxsoir.supabase.co';
+
+export function resolveSupabaseUrl(): string {
+  const envUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim().replace(/\/+$/, '');
+  if (envUrl) return envUrl;
+
+  if (typeof window !== 'undefined' && window.location) {
+    const host = window.location.hostname || '';
+    const origin = window.location.origin || '';
+    // If running in local node dev environment, prefer Express backend
+    if (host === 'localhost' || host === '127.0.0.1' || host.includes('localhost')) {
+      return '';
+    }
+    // Deployed environments (e.g. Vercel adhan-khaki.vercel.app) default to the live Supabase project
+    if (host.includes('vercel.app') || origin.includes('vercel.app') || host.length > 0) {
+      return DEFAULT_SUPABASE_URL;
+    }
+  }
+
+  // Production build / SSR default
+  return import.meta.env.PROD ? DEFAULT_SUPABASE_URL : '';
+}
+
+const SUPABASE_URL = resolveSupabaseUrl();
 const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
-export const IS_SUPABASE_BACKEND = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+export const IS_SUPABASE_BACKEND = Boolean(SUPABASE_URL);
 
 export function getBackendTransportMode(): 'supabase' | 'express' {
   return IS_SUPABASE_BACKEND ? 'supabase' : 'express';
@@ -102,7 +125,7 @@ function buildBackendHeaders(deviceToken?: string, includeJson = true): Record<s
   const headers: Record<string, string> = {};
   if (includeJson) headers['Content-Type'] = 'application/json';
   if (deviceToken) headers['X-Device-Token'] = deviceToken;
-  if (IS_SUPABASE_BACKEND) {
+  if (IS_SUPABASE_BACKEND && SUPABASE_ANON_KEY) {
     headers.apikey = SUPABASE_ANON_KEY;
     headers.Authorization = `Bearer ${SUPABASE_ANON_KEY}`;
   }
@@ -119,7 +142,8 @@ function backendEndpoint(
     | 'test'
     | 'verify-click'
     | 'test-expired-cleanup'
-    | 'diagnostics',
+    | 'diagnostics'
+    | 'schedule-test-push',
   deviceId?: string
 ): string {
   if (!IS_SUPABASE_BACKEND) {
@@ -146,6 +170,10 @@ function backendEndpoint(
       return `${SUPABASE_URL}/functions/v1/update-preferences`;
     case 'test':
       return `${SUPABASE_URL}/functions/v1/send-test-push`;
+    case 'schedule-test-push':
+      return `${SUPABASE_URL}/functions/v1/schedule-test-push${
+        deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : ''
+      }`;
     case 'test-expired-cleanup':
       return `${SUPABASE_URL}/functions/v1/cleanup-subscriptions`;
   }
@@ -226,6 +254,17 @@ export interface BackendDeliveryAttempt {
   updatedAt: string;
 }
 
+export interface BackgroundTestJobSummary {
+  id: string;
+  deviceUuid: string;
+  status: 'pending' | 'processing' | 'sent' | 'failed' | 'cancelled';
+  scheduledAt: string;
+  sentAt?: string | null;
+  errorMessage?: string | null;
+  attempts?: number;
+  createdAt: string;
+}
+
 export interface BackendSubscriptionSummary {
   subscriptionId: string;
   deviceId: string;
@@ -244,6 +283,7 @@ export interface BackendSubscriptionSummary {
   lastDeliveryError: string | null;
   lastClickVerifiedAt: string | null;
   failureCount: number;
+  latestTestJob?: BackgroundTestJobSummary | null;
   nextScheduledPrayer: {
     prayer: PrayerName;
     label: string;
@@ -292,6 +332,7 @@ export interface PushDiagnosticsResponse {
     setupInstructions: string[];
   };
   subscription: BackendSubscriptionSummary | null;
+  latestTestJob?: BackgroundTestJobSummary | null;
   recentDeliveries: BackendDeliveryAttempt[];
   recentLogs: Array<{
     id: number;
@@ -1254,6 +1295,146 @@ export async function sendBackendTestPushNotification(): Promise<{
     const msg = err instanceof Error ? err.message : String(err);
     appendPushClientEvent({ level: 'error', stage: 'test_push', message: msg });
     return { ok: false, error: msg };
+  }
+}
+
+export async function scheduleBackgroundTestPush(params?: {
+  delayMinutes?: number;
+}): Promise<{
+  ok: boolean;
+  job?: BackgroundTestJobSummary | null;
+  error?: string;
+  httpStatus?: number | null;
+}> {
+  const { deviceId, deviceToken } = getOrCreateDeviceCredentials();
+  const delayMinutes = params?.delayMinutes ?? 2;
+
+  try {
+    const res = await fetchWithTimeout(backendEndpoint('schedule-test-push'), {
+      method: 'POST',
+      headers: buildBackendHeaders(deviceToken),
+      body: JSON.stringify({ deviceId, deviceToken, delayMinutes }),
+    });
+
+    const parsed = await parseJsonSafe<{
+      ok?: boolean;
+      job?: BackgroundTestJobSummary | null;
+      error?: string;
+    }>(res);
+
+    if (!parsed.ok) {
+      appendPushClientEvent({
+        level: 'error',
+        stage: 'schedule_test_push',
+        message: parsed.error,
+        httpStatus: res.status,
+      });
+      return { ok: false, error: parsed.error, httpStatus: res.status };
+    }
+
+    const ok = Boolean(res.ok && parsed.data.ok);
+    appendPushClientEvent({
+      level: ok ? 'info' : 'error',
+      stage: 'schedule_test_push',
+      message: ok
+        ? `Scheduled background push in ${delayMinutes} min (${parsed.data.job?.scheduledAt ?? 'queued'})`
+        : parsed.data.error || `Scheduling failed (HTTP ${res.status})`,
+      httpStatus: res.status,
+    });
+
+    return {
+      ok,
+      job: parsed.data.job ?? null,
+      error: ok ? undefined : parsed.data.error || `HTTP ${res.status}`,
+      httpStatus: res.status,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    appendPushClientEvent({ level: 'error', stage: 'schedule_test_push', message: msg });
+    return { ok: false, error: msg, httpStatus: null };
+  }
+}
+
+export async function cancelBackgroundTestPush(): Promise<{
+  ok: boolean;
+  cancelledCount?: number;
+  error?: string;
+}> {
+  const { deviceId, deviceToken } = getOrCreateDeviceCredentials();
+
+  try {
+    const res = await fetchWithTimeout(backendEndpoint('schedule-test-push'), {
+      method: 'POST',
+      headers: buildBackendHeaders(deviceToken),
+      body: JSON.stringify({ action: 'cancel', deviceId, deviceToken }),
+    });
+
+    const parsed = await parseJsonSafe<{
+      ok?: boolean;
+      cancelledCount?: number;
+      error?: string;
+    }>(res);
+
+    if (!parsed.ok) {
+      appendPushClientEvent({
+        level: 'error',
+        stage: 'cancel_test_push',
+        message: parsed.error,
+        httpStatus: res.status,
+      });
+      return { ok: false, error: parsed.error };
+    }
+
+    const ok = Boolean(res.ok && parsed.data.ok);
+    appendPushClientEvent({
+      level: ok ? 'info' : 'warn',
+      stage: 'cancel_test_push',
+      message: ok ? 'Cancelled scheduled background test push.' : parsed.data.error || 'Cancel failed',
+      httpStatus: res.status,
+    });
+
+    return {
+      ok,
+      cancelledCount: parsed.data.cancelledCount,
+      error: ok ? undefined : parsed.data.error,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    appendPushClientEvent({ level: 'error', stage: 'cancel_test_push', message: msg });
+    return { ok: false, error: msg };
+  }
+}
+
+export async function fetchBackgroundTestJobStatus(): Promise<{
+  ok: boolean;
+  job: BackgroundTestJobSummary | null;
+  error?: string;
+}> {
+  const { deviceId, deviceToken } = getOrCreateDeviceCredentials();
+
+  try {
+    const endpoint = backendEndpoint('schedule-test-push', deviceId);
+    const res = await fetchWithTimeout(endpoint, {
+      headers: buildBackendHeaders(deviceToken, false),
+    });
+
+    const parsed = await parseJsonSafe<{
+      ok?: boolean;
+      job?: BackgroundTestJobSummary | null;
+      error?: string;
+    }>(res);
+
+    if (!parsed.ok) {
+      return { ok: false, job: null, error: parsed.error };
+    }
+
+    return {
+      ok: Boolean(res.ok && parsed.data.ok),
+      job: parsed.data.job ?? null,
+      error: res.ok ? undefined : parsed.data.error || `HTTP ${res.status}`,
+    };
+  } catch (err) {
+    return { ok: false, job: null, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

@@ -98,7 +98,6 @@ Deno.serve(async (req: Request) => {
     p256dhKey: sub.p256dh_key,
     authKey: sub.auth_key,
     ttlSeconds: 120,
-    topic: 'my-adhan-test',
     payload: {
       title: 'My Adhan · Background Push Active',
       body: `${zoneInfo.districtName} (${zoneInfo.zoneName}) — ${nextLine}`,

@@ -417,6 +417,15 @@ export async function sendEncryptedPush(params: {
   } catch (err) {
     const pushErr = err as { statusCode?: number; body?: string; message?: string };
     const statusCode = typeof pushErr.statusCode === 'number' ? pushErr.statusCode : null;
+    const isBadTopic =
+      statusCode === 400 &&
+      (String(pushErr.body || '').includes('BadWebPushTopic') ||
+        String(pushErr.message || '').includes('BadWebPushTopic'));
+    if (isBadTopic && params.topic) {
+      console.warn('[push] BadWebPushTopic returned from push service; retrying without topic header');
+      return sendEncryptedPush({ ...params, topic: undefined });
+    }
+
     const expired = statusCode === 404 || statusCode === 410;
     const errorText = [
       statusCode ? `HTTP ${statusCode}` : 'Push error',
@@ -502,6 +511,32 @@ export async function buildSubscriptionSummary(
   }
 
   const endpointStr = String(sub.endpoint);
+
+  let latestTestJob: Record<string, unknown> | null = null;
+  try {
+    const { data: jobRow } = await supabase
+      .from('push_test_jobs')
+      .select('id, status, scheduled_at, sent_at, error_message, created_at, attempts')
+      .eq('device_uuid', dev.id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (jobRow) {
+      latestTestJob = {
+        id: jobRow.id,
+        status: jobRow.status,
+        scheduledAt: jobRow.scheduled_at,
+        sentAt: jobRow.sent_at,
+        errorMessage: jobRow.error_message,
+        createdAt: jobRow.created_at,
+        attempts: jobRow.attempts,
+      };
+    }
+  } catch {
+    // Gracefully ignore if migration is pending in dev
+  }
+
   return {
     subscriptionId: sub.id,
     deviceId: dev.device_id,
@@ -533,5 +568,6 @@ export async function buildSubscriptionSummary(
     lastClickVerifiedAt: sub.last_click_verified_at,
     failureCount: sub.failure_count,
     nextScheduledPrayer: nextPrayer,
+    latestTestJob,
   };
 }

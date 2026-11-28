@@ -3,13 +3,16 @@ import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertCircle,
   Bell,
+  CalendarClock,
   Check,
   CheckCircle2,
   ChevronDown,
+  Clock,
   Info,
   Loader2,
   Music,
   Play,
+  RotateCcw,
   Square,
   Trash2,
   Upload,
@@ -25,9 +28,13 @@ import {
   unlockAudioForSession,
 } from '../lib/audioEngine';
 import {
+  cancelBackgroundTestPush,
+  fetchBackgroundTestJobStatus,
   fetchVapidPublicKeyStatus,
   getBackendTransportMode,
+  scheduleBackgroundTestPush,
   type BackendSubscriptionSummary,
+  type BackgroundTestJobSummary,
 } from '../lib/webPushClient';
 import { LockScreenSyncCard } from './LockScreenSyncCard';
 import type { AdapterCapabilities, ScheduledReminderSummary } from '../lib/reminders';
@@ -100,6 +107,129 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
     error: string;
     instructions: string[];
   } | null>(null);
+
+  // Background Push Test (Closed App / Lock Screen) state
+  const [testDelayMinutes, setTestDelayMinutes] = useState<number>(2);
+  const [backgroundTestJob, setBackgroundTestJob] = useState<BackgroundTestJobSummary | null>(
+    backendPushSubscription?.latestTestJob ?? null
+  );
+  const [schedulingTest, setSchedulingTest] = useState(false);
+  const [cancellingTest, setCancellingTest] = useState(false);
+  const [testJobFeedback, setTestJobFeedback] = useState<{
+    tone: 'success' | 'error' | 'working';
+    message: string;
+  } | null>(null);
+  const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (backendPushSubscription?.latestTestJob !== undefined) {
+      setBackgroundTestJob(backendPushSubscription.latestTestJob);
+    }
+  }, [backendPushSubscription?.latestTestJob]);
+
+  // Poll job status if a job is currently pending or processing
+  useEffect(() => {
+    let isMounted = true;
+    if (
+      !backgroundTestJob ||
+      (backgroundTestJob.status !== 'pending' && backgroundTestJob.status !== 'processing')
+    ) {
+      return;
+    }
+
+    const pollInterval = setInterval(async () => {
+      const res = await fetchBackgroundTestJobStatus();
+      if (!isMounted) return;
+      if (res.ok && res.job) {
+        setBackgroundTestJob(res.job);
+      }
+    }, 10000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(pollInterval);
+    };
+  }, [backgroundTestJob?.status, backgroundTestJob?.id]);
+
+  // Live countdown ticker for pending test job
+  useEffect(() => {
+    if (!backgroundTestJob || backgroundTestJob.status !== 'pending') {
+      setCountdownSeconds(null);
+      return;
+    }
+
+    const updateCountdown = () => {
+      const targetMs = new Date(backgroundTestJob.scheduledAt).getTime();
+      const remainingSec = Math.max(0, Math.ceil((targetMs - Date.now()) / 1000));
+      setCountdownSeconds(remainingSec);
+    };
+
+    updateCountdown();
+    const timer = setInterval(updateCountdown, 1000);
+    return () => clearInterval(timer);
+  }, [backgroundTestJob?.scheduledAt, backgroundTestJob?.status]);
+
+  const handleScheduleBackgroundTest = async () => {
+    if (schedulingTest || cancellingTest) return;
+    setSchedulingTest(true);
+    setTestJobFeedback(null);
+    try {
+      const res = await scheduleBackgroundTestPush({ delayMinutes: testDelayMinutes });
+      if (res.ok && res.job) {
+        setBackgroundTestJob(res.job);
+        const timeStr = new Date(res.job.scheduledAt).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+        setTestJobFeedback({
+          tone: 'success',
+          message: `Scheduled! Push notification queued for ${timeStr} (in ${testDelayMinutes} min). You can now lock your screen or swipe close the app to test background delivery.`,
+        });
+      } else {
+        setTestJobFeedback({
+          tone: 'error',
+          message: res.error || 'Failed to schedule background test push.',
+        });
+      }
+    } catch (err) {
+      setTestJobFeedback({
+        tone: 'error',
+        message: (err as Error).message,
+      });
+    } finally {
+      setSchedulingTest(false);
+    }
+  };
+
+  const handleCancelBackgroundTest = async () => {
+    if (cancellingTest) return;
+    setCancellingTest(true);
+    setTestJobFeedback(null);
+    try {
+      const res = await cancelBackgroundTestPush();
+      if (res.ok) {
+        if (backgroundTestJob) {
+          setBackgroundTestJob({ ...backgroundTestJob, status: 'cancelled' });
+        }
+        setTestJobFeedback({
+          tone: 'success',
+          message: 'Scheduled background test cancelled cleanly.',
+        });
+      } else {
+        setTestJobFeedback({
+          tone: 'error',
+          message: res.error || 'Could not cancel scheduled test job.',
+        });
+      }
+    } catch (err) {
+      setTestJobFeedback({
+        tone: 'error',
+        message: (err as Error).message,
+      });
+    } finally {
+      setCancellingTest(false);
+    }
+  };
 
   useEffect(() => {
     void listLocalAudioTracks().then(setLocalTracks);
@@ -673,6 +803,157 @@ export const AudioRemindersView: React.FC<AudioRemindersViewProps> = ({
               Open Push Diagnostics
             </button>
           </div>
+        </div>
+
+        {/* Dedicated Background Push Test (Closed App / Lock Screen) Card */}
+        <div className="rounded-2xl border border-emerald-900/15 bg-gradient-to-br from-emerald-50/60 via-white to-stone-50/70 p-4 dark:border-emerald-700/30 dark:from-emerald-950/20 dark:via-slate-900 dark:to-slate-950/40">
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <CalendarClock className="h-4 w-4 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
+                <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  Background Push Test (Closed App / Lock Screen)
+                </h3>
+              </div>
+              <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+                Schedule a server-side push notification to wake your iPhone Lock Screen in 2, 5, or 10 minutes.
+                Once scheduled, swipe close My Adhan or press the power button to lock your screen.
+              </p>
+            </div>
+            {backgroundTestJob?.status === 'pending' && (
+              <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-900 dark:bg-amber-950/70 dark:text-amber-300">
+                <span className="h-2 w-2 rounded-full bg-amber-500 animate-ping" />
+                Pending Dispatch
+              </span>
+            )}
+          </div>
+
+          {/* Pending Job Status Banner with Countdown and Cancel */}
+          {backgroundTestJob &&
+          (backgroundTestJob.status === 'pending' || backgroundTestJob.status === 'processing') ? (
+            <div className="mt-3.5 space-y-3 rounded-xl border border-amber-300/80 bg-amber-50/80 p-3.5 text-xs dark:border-amber-700/50 dark:bg-amber-950/30">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-amber-950 dark:text-amber-100">
+                  {backgroundTestJob.status === 'processing'
+                    ? 'Dispatched to APNs / in flight…'
+                    : `Dispatches at ${new Date(backgroundTestJob.scheduledAt).toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })} (Asia/Colombo)`}
+                </span>
+                {countdownSeconds !== null && countdownSeconds > 0 && (
+                  <span className="font-mono-tabular font-bold text-amber-900 dark:text-amber-300">
+                    in {formatDuration(countdownSeconds)}
+                  </span>
+                )}
+              </div>
+
+              <p className="text-[11px] leading-relaxed text-amber-900/90 dark:text-amber-200/90">
+                You can safely <strong>swipe close My Adhan</strong> or <strong>lock your iPhone</strong> now.
+                Supabase <code className="font-mono-tabular">pg_cron</code> will trigger the background push at the exact scheduled minute.
+              </p>
+
+              <div className="flex items-center justify-end gap-2 pt-1 border-t border-amber-200/60 dark:border-amber-800/40">
+                <button
+                  type="button"
+                  disabled={cancellingTest}
+                  onClick={() => void handleCancelBackgroundTest()}
+                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-rose-300 bg-white px-3 text-xs font-semibold text-rose-800 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-800 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-rose-950/30"
+                >
+                  <RotateCcw className={`h-3 w-3 ${cancellingTest ? 'animate-spin' : ''}`} aria-hidden="true" />
+                  <span>{cancellingTest ? 'Cancelling…' : 'Cancel Scheduled Test'}</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            /* Scheduling Controls */
+            <div className="mt-3 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                  Select Dispatch Delay:
+                </span>
+                <div className="flex rounded-xl bg-stone-100 p-1 dark:bg-slate-800/80">
+                  {([2, 5, 10] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setTestDelayMinutes(m)}
+                      className={`min-h-[32px] rounded-lg px-2.5 text-xs font-medium transition-colors ${
+                        testDelayMinutes === m
+                          ? 'bg-white font-semibold text-emerald-950 shadow-xs dark:bg-slate-900 dark:text-emerald-300'
+                          : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      {m} min {m === 2 ? '(Recommended)' : ''}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <button
+                  type="button"
+                  disabled={
+                    schedulingTest ||
+                    !backendPushSubscription ||
+                    backendPushSubscription.status !== 'active'
+                  }
+                  onClick={() => void handleScheduleBackgroundTest()}
+                  className="inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl bg-emerald-800 px-4 text-xs font-semibold text-white transition-colors hover:bg-emerald-900 disabled:opacity-45 dark:bg-emerald-700 dark:hover:bg-emerald-600"
+                >
+                  {schedulingTest ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                      <span>Scheduling with Backend…</span>
+                    </>
+                  ) : (
+                    <>
+                      <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span>Schedule {testDelayMinutes}-Minute Background Test</span>
+                    </>
+                  )}
+                </button>
+
+                {backgroundTestJob?.status === 'sent' && (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
+                    <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    Last test sent{' '}
+                    {formatDuration(
+                      Math.max(
+                        0,
+                        Math.floor(
+                          (Date.now() -
+                            new Date(backgroundTestJob.sentAt || backgroundTestJob.scheduledAt).getTime()) /
+                            1000
+                        )
+                      )
+                    )}
+                    s ago
+                  </span>
+                )}
+                {backgroundTestJob?.status === 'failed' && (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-rose-700 dark:text-rose-400">
+                    <AlertCircle className="h-3.5 w-3.5" aria-hidden="true" />
+                    Last test failed: {backgroundTestJob.errorMessage || 'Unknown error'}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Feedback Banner */}
+          {testJobFeedback && (
+            <p
+              role={testJobFeedback.tone === 'error' ? 'alert' : 'status'}
+              className={`mt-3 rounded-xl border px-3 py-2 text-xs leading-relaxed ${
+                testJobFeedback.tone === 'error'
+                  ? 'border-rose-300 bg-rose-50 text-rose-950 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-200'
+                  : 'border-emerald-300 bg-emerald-50 text-emerald-950 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200'
+              }`}
+            >
+              {testJobFeedback.message}
+            </p>
+          )}
         </div>
 
         {!hasVerifiedToday && (

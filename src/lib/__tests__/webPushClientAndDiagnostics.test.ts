@@ -12,11 +12,14 @@ import { ACJU_DISTRICTS, ACJU_ZONES } from '../../shared/acjuSeed.ts';
 import type { UserPreferences } from '../../shared/types.ts';
 import {
   appendPushClientEvent,
+  cancelBackgroundTestPush,
   clearPushClientEvents,
   enableBackgroundPushNotifications,
+  fetchBackgroundTestJobStatus,
   fetchPushDiagnosticsDetailed,
   getPushClientEvents,
   inspectPushEnvironment,
+  scheduleBackgroundTestPush,
   urlBase64ToUint8Array,
 } from '../webPushClient.ts';
 
@@ -570,5 +573,64 @@ describe('webPushClient & PushDiagnosticsView reliability suite', () => {
       })
     );
     expect(ebHtml).toContain('Diagnostics Safe Child');
+  });
+
+  it('schedules and cancels background test pushes cleanly via fetch mock', async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes('schedule-test-push')) {
+        if (init?.method === 'POST') {
+          const body = JSON.parse(String(init.body || '{}'));
+          if (body.action === 'cancel') {
+            return new Response(JSON.stringify({ ok: true, cancelledCount: 1 }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              job: {
+                id: 'job-123',
+                deviceUuid: 'dev-uuid',
+                status: 'pending',
+                scheduledAt: new Date(Date.now() + 120_000).toISOString(),
+                createdAt: new Date().toISOString(),
+              },
+            }),
+            { status: 201, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        // GET status
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            job: {
+              id: 'job-123',
+              deviceUuid: 'dev-uuid',
+              status: 'pending',
+              scheduledAt: new Date(Date.now() + 120_000).toISOString(),
+              createdAt: new Date().toISOString(),
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify({ ok: false }), { status: 404 });
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    const schedRes = await scheduleBackgroundTestPush({ delayMinutes: 2 });
+    expect(schedRes.ok).toBe(true);
+    expect(schedRes.job?.id).toBe('job-123');
+    expect(schedRes.job?.status).toBe('pending');
+
+    const statusRes = await fetchBackgroundTestJobStatus();
+    expect(statusRes.ok).toBe(true);
+    expect(statusRes.job?.id).toBe('job-123');
+
+    const cancelRes = await cancelBackgroundTestPush();
+    expect(cancelRes.ok).toBe(true);
+    expect(cancelRes.cancelledCount).toBe(1);
   });
 });

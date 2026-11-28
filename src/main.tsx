@@ -17,10 +17,16 @@ if ('serviceWorker' in navigator) {
     },
     onRegisterError(err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const isRedirectOnProxy =
+        msg.includes('redirect') &&
+        typeof window !== 'undefined' &&
+        window.location.hostname.includes('.run.app');
       appendPushClientEvent({
         level: 'error',
         stage: 'sw_register_startup',
-        message: `Startup Service Worker registration failed: ${msg}`,
+        message: isRedirectOnProxy
+          ? `Startup Service Worker registration failed: Cloud Run preview proxy redirected the script (disallowed by W3C SW spec). For reliable PWA & Web Push testing, use the production deployment: https://adhan-khaki.vercel.app`
+          : `Startup Service Worker registration failed: ${msg}`,
       });
     },
   });

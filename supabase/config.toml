@@ -23,3 +23,9 @@ verify_jwt = false
 
 [functions.cleanup-subscriptions]
 verify_jwt = false
+
+[functions.schedule-test-push]
+verify_jwt = false
+
+[functions.dispatch-test-push]
+verify_jwt = false

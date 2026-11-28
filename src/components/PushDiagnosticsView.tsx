@@ -3,10 +3,12 @@ import {
   AlertTriangle,
   ArrowLeft,
   Bell,
+  CalendarClock,
   CheckCircle2,
   Clock,
   PlayCircle,
   RefreshCw,
+  RotateCcw,
   Server,
   ShieldCheck,
   Terminal,
@@ -16,6 +18,7 @@ import {
 import {
   PUSH_CHANNEL_NAME,
   appendPushClientEvent,
+  cancelBackgroundTestPush,
   clearPushClientEvents,
   disableBackgroundPushNotifications,
   enableBackgroundPushNotifications,
@@ -26,8 +29,10 @@ import {
   getPushClientEvents,
   inspectPushEnvironment,
   pingServiceWorker,
+  scheduleBackgroundTestPush,
   sendBackendTestPushNotification,
   triggerExpiredCleanupDiagnostic,
+  type BackgroundTestJobSummary,
   type PushClientEnvironment,
   type PushClientLogEntry,
   type PushDiagnosticsResponse,
@@ -695,6 +700,62 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
     }
   };
 
+  const handleScheduleTestPush = async (delayMinutes = 2) => {
+    if (busyAction !== null) return;
+    setBusyAction('schedule-test');
+    setActionFeedback(null);
+    try {
+      const res = await scheduleBackgroundTestPush({ delayMinutes });
+      setActionFeedback(
+        res.ok
+          ? {
+              tone: 'success',
+              message: `Scheduled ${delayMinutes}-minute background test push (${res.job?.scheduledAt ?? 'queued'}). Close PWA or lock iPhone screen to test.`,
+            }
+          : {
+              tone: 'error',
+              message: res.error || 'Failed to schedule background test job.',
+            }
+      );
+      onPushStatusUpdated();
+      await runLiveChecks();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendPushClientEvent({ level: 'error', stage: 'diag_schedule_test', message: msg });
+      setActionFeedback({ tone: 'error', message: `Unexpected error: ${msg}` });
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleCancelTestPush = async () => {
+    if (busyAction !== null) return;
+    setBusyAction('cancel-test');
+    setActionFeedback(null);
+    try {
+      const res = await cancelBackgroundTestPush();
+      setActionFeedback(
+        res.ok
+          ? {
+              tone: 'success',
+              message: 'Cancelled pending background test push job.',
+            }
+          : {
+              tone: 'error',
+              message: res.error || 'Could not cancel scheduled test job.',
+            }
+      );
+      onPushStatusUpdated();
+      await runLiveChecks();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendPushClientEvent({ level: 'error', stage: 'diag_cancel_test', message: msg });
+      setActionFeedback({ tone: 'error', message: `Unexpected error: ${msg}` });
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const passCount = checks.filter((c) => c.status === 'pass').length;
   const failCount = checks.filter((c) => c.status === 'fail').length;
   const warnCount = checks.filter((c) => c.status === 'warning').length;
@@ -756,6 +817,16 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
           >
             <Bell className="h-4 w-4" aria-hidden="true" />
             <span>{busyAction === 'test' ? 'Sending Push…' : 'Send End-to-End Test Push'}</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={busyAction !== null}
+            onClick={() => void handleScheduleTestPush(2)}
+            className="inline-flex min-h-[42px] items-center gap-1.5 rounded-xl border border-amber-600 bg-amber-50 px-3.5 text-xs font-semibold text-amber-950 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
+          >
+            <CalendarClock className="h-4 w-4" aria-hidden="true" />
+            <span>{busyAction === 'schedule-test' ? 'Scheduling…' : 'Schedule 2m Lock Screen Test'}</span>
           </button>
 
           <button
@@ -877,6 +948,127 @@ export const PushDiagnosticsView: React.FC<PushDiagnosticsViewProps> = ({
           ))}
         </div>
       </section>
+
+      {/* Background Test Job Status & Verification Stages */}
+      {(() => {
+        const testJob = diag?.subscription?.latestTestJob ?? diag?.latestTestJob;
+        const clickVerified = Boolean(diag?.subscription?.lastClickVerifiedAt);
+        return (
+          <section className="rounded-3xl border border-stone-200 bg-white p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <CalendarClock className="h-4 w-4 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
+                <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  Background Test Push Verification Stages
+                </h2>
+              </div>
+              {testJob && testJob.status === 'pending' && (
+                <button
+                  type="button"
+                  disabled={busyAction !== null}
+                  onClick={() => void handleCancelTestPush()}
+                  className="inline-flex items-center gap-1 rounded-lg border border-rose-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-rose-800 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-800 dark:bg-slate-950 dark:text-rose-300"
+                >
+                  <RotateCcw
+                    className={`h-3 w-3 ${busyAction === 'cancel-test' ? 'animate-spin' : ''}`}
+                    aria-hidden="true"
+                  />
+                  <span>Cancel Pending Job</span>
+                </button>
+              )}
+            </div>
+
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Multi-stage delivery verification for closed-app / locked-screen push testing.
+            </p>
+
+            <div className="mt-3.5 grid gap-3 sm:grid-cols-3">
+              {/* Stage 1: Job Scheduled in Database */}
+              <div className="rounded-2xl border border-stone-200 bg-stone-50/70 p-3.5 text-xs dark:border-slate-800 dark:bg-slate-950/50">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-slate-900 dark:text-slate-100">
+                    1. Job Scheduled
+                  </span>
+                  <span
+                    className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold uppercase ${
+                      testJob
+                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                        : 'bg-stone-200 text-slate-700 dark:bg-slate-800 dark:text-slate-400'
+                    }`}
+                  >
+                    {testJob ? testJob.status : 'None'}
+                  </span>
+                </div>
+                <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                  {testJob
+                    ? `Scheduled for: ${formatTs(testJob.scheduledAt)} (ID: ${testJob.id.slice(0, 8)}…)`
+                    : 'No test job scheduled yet.'}
+                </p>
+              </div>
+
+              {/* Stage 2: Push Dispatched / Accepted */}
+              <div className="rounded-2xl border border-stone-200 bg-stone-50/70 p-3.5 text-xs dark:border-slate-800 dark:bg-slate-950/50">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-slate-900 dark:text-slate-100">
+                    2. Push Dispatched
+                  </span>
+                  <span
+                    className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold uppercase ${
+                      testJob?.status === 'sent'
+                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                        : testJob?.status === 'failed'
+                        ? 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
+                        : testJob?.status === 'processing'
+                        ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                        : 'bg-stone-200 text-slate-700 dark:bg-slate-800 dark:text-slate-400'
+                    }`}
+                  >
+                    {testJob?.status === 'sent'
+                      ? 'Dispatched'
+                      : testJob?.status === 'failed'
+                      ? 'Failed'
+                      : testJob?.status === 'processing'
+                      ? 'In Flight'
+                      : 'Pending'}
+                  </span>
+                </div>
+                <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                  {testJob?.sentAt
+                    ? `Dispatched at: ${formatTs(testJob.sentAt)} (No topic header)`
+                    : testJob?.errorMessage
+                    ? `Error: ${testJob.errorMessage}`
+                    : testJob?.status === 'pending'
+                    ? 'Awaiting pg_cron tick at scheduled minute.'
+                    : 'Not yet dispatched.'}
+                </p>
+              </div>
+
+              {/* Stage 3: Notification Received & Click Verified */}
+              <div className="rounded-2xl border border-stone-200 bg-stone-50/70 p-3.5 text-xs dark:border-slate-800 dark:bg-slate-950/50">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-slate-900 dark:text-slate-100">
+                    3. Notification Click
+                  </span>
+                  <span
+                    className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold uppercase ${
+                      clickVerified
+                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                        : 'bg-stone-200 text-slate-700 dark:bg-slate-800 dark:text-slate-400'
+                    }`}
+                  >
+                    {clickVerified ? 'Verified' : 'Unconfirmed'}
+                  </span>
+                </div>
+                <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                  {clickVerified
+                    ? `Last tap verified: ${formatTs(diag?.subscription?.lastClickVerifiedAt)}`
+                    : 'Tap lock screen push banner to verify app launch.'}
+                </p>
+              </div>
+            </div>
+          </section>
+        );
+      })()}
 
       {/* Backend State + Technical Event Log */}
       <div className="grid gap-4 lg:grid-cols-2">

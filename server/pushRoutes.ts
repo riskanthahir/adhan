@@ -2,9 +2,12 @@ import { timingSafeEqual } from 'node:crypto';
 import express, { type Request, type Response } from 'express';
 import {
   appendServerLog,
+  cancelPendingTestPushJobs,
+  createTestPushJob,
   getAppliedMigrations,
   getDatabasePath,
   getDatabaseStats,
+  getLatestTestPushJob,
   getSubscriptionByDeviceId,
   listDeliveriesForDevice,
   listServerLogsForDevice,
@@ -138,6 +141,7 @@ function serializeSubscriptionSummary(sub: ReturnType<typeof getSubscriptionByDe
     lastClickVerifiedAt: sub.lastClickVerifiedAt,
     failureCount: sub.failureCount,
     nextScheduledPrayer: nextInfo.nextPrayer,
+    latestTestJob: getLatestTestPushJob(sub.deviceId),
   };
 }
 
@@ -524,6 +528,78 @@ export function createPushRouter(): express.Router {
     res.json({
       ok: true,
       subscription: serializeSubscriptionSummary(getSubscriptionByDeviceId(deviceId)),
+    });
+  });
+
+  router.get('/push/schedule-test-push', (req: Request, res: Response) => {
+    const deviceId = typeof req.query.deviceId === 'string' ? req.query.deviceId : undefined;
+    const deviceToken = extractDeviceToken(req);
+
+    if (!isValidDeviceId(deviceId) || !isValidDeviceToken(deviceToken)) {
+      res.status(400).json({ error: 'Invalid deviceId or deviceToken.' });
+      return;
+    }
+
+    const sub = getSubscriptionByDeviceId(deviceId);
+    if (!sub || !verifyDeviceOwnership(sub, deviceToken)) {
+      res.status(403).json({ error: 'Unauthorized device token.' });
+      return;
+    }
+
+    const job = getLatestTestPushJob(deviceId);
+    res.json({ ok: true, job });
+  });
+
+  router.post('/push/schedule-test-push', (req: Request, res: Response) => {
+    const body = req.body as Record<string, unknown>;
+    const deviceId = body.deviceId;
+    const deviceToken = extractDeviceToken(req);
+
+    if (!isValidDeviceId(deviceId) || !isValidDeviceToken(deviceToken)) {
+      res.status(400).json({ error: 'Invalid deviceId or deviceToken.' });
+      return;
+    }
+
+    const sub = getSubscriptionByDeviceId(deviceId);
+    if (!sub || !verifyDeviceOwnership(sub, deviceToken)) {
+      res.status(403).json({ error: 'Unauthorized device token.' });
+      return;
+    }
+
+    if (body.action === 'cancel') {
+      const cancelledCount = cancelPendingTestPushJobs(deviceId);
+      res.json({ ok: true, cancelled: cancelledCount > 0 });
+      return;
+    }
+
+    if (sub.status !== 'active') {
+      res.status(409).json({ error: 'Active push subscription required to schedule test.' });
+      return;
+    }
+
+    let delayMinutes = 2;
+    if (typeof body.delayMinutes === 'number' && Number.isFinite(body.delayMinutes)) {
+      delayMinutes = Math.min(15, Math.max(1, Math.round(body.delayMinutes)));
+    }
+    const scheduledForEpochMs = Date.now() + delayMinutes * 60_000;
+    const scheduledAt = new Date(scheduledForEpochMs).toISOString();
+
+    const job = createTestPushJob({
+      deviceId,
+      scheduledAt,
+      scheduledForEpochMs,
+    });
+
+    res.json({
+      ok: true,
+      job: {
+        id: job.id,
+        deviceId: job.deviceId,
+        scheduledAt: job.scheduledAt,
+        status: job.status,
+        delayMinutes,
+        createdAt: job.createdAt,
+      },
     });
   });
 

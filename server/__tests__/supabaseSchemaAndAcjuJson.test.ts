@@ -76,6 +76,10 @@ describe('ACJU District JSON Repository Data & Supabase Schema/Deployment Contra
       path.resolve(ROOT, 'supabase/migrations/20261127000002_pg_cron_scheduler.sql'),
       'utf8'
     );
+    const m3 = fs.readFileSync(
+      path.resolve(ROOT, 'supabase/migrations/20261128000001_background_test_push_jobs.sql'),
+      'utf8'
+    );
 
     for (const tbl of [
       'public.devices',
@@ -101,9 +105,15 @@ describe('ACJU District JSON Repository Data & Supabase Schema/Deployment Contra
     expect(m2).toContain("'* * * * *'");
     expect(m2).toContain("'dispatch-prayer-push'");
     expect(m2).toContain("'cleanup-subscriptions'");
+
+    expect(m3).toContain('CREATE TABLE IF NOT EXISTS public.push_test_jobs');
+    expect(m3).toContain('ALTER TABLE public.push_test_jobs ENABLE ROW LEVEL SECURITY');
+    expect(m3).toContain('claim_due_test_push_jobs');
+    expect(m3).toContain('FOR UPDATE SKIP LOCKED');
+    expect(m3).toContain("'dispatch-test-push'");
   });
 
-  it('ships all 5 Supabase Edge Functions with verify_jwt = false in config.toml and excludes secrets from src/', () => {
+  it('ships all 7 Supabase Edge Functions with verify_jwt = false in config.toml and excludes secrets from src/', () => {
     const configToml = fs.readFileSync(path.resolve(ROOT, 'supabase/config.toml'), 'utf8');
     for (const fn of [
       'register-device',
@@ -111,6 +121,8 @@ describe('ACJU District JSON Repository Data & Supabase Schema/Deployment Contra
       'send-test-push',
       'dispatch-prayer-push',
       'cleanup-subscriptions',
+      'schedule-test-push',
+      'dispatch-test-push',
     ]) {
       expect(fs.existsSync(path.resolve(ROOT, `supabase/functions/${fn}/index.ts`))).toBe(true);
       expect(configToml).toContain(`[functions.${fn}]`);
